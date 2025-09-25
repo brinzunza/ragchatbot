@@ -18,4 +18,5 @@ numpy
 faiss-cpu
 requests
 langchain-ollama
-"nomic[local]"
+nomic[local]
+uvicorn

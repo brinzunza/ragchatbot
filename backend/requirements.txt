@@ -17,3 +17,5 @@ seaborn
 numpy
 faiss-cpu
 requests
+langchain-ollama
+"nomic[local]"

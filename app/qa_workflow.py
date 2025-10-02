@@ -1,12 +1,19 @@
-from typing import List, Tuple, TypedDict
-from langgraph.graph import END, START, StateGraph
-from llm_nodes import *
-import time
 import os
 import re
+import time
+from typing import List, Tuple, TypedDict
 
-# State definition
+from langgraph.graph import END, START, StateGraph
+from llm_prompts import (
+    answer_grader,
+    generator,
+    hallucination_grader,
+    question_rewriter
+)
+
+
 class GraphState(TypedDict):
+    """State definition for the QA workflow graph."""
     question: str
     generation: str
     documents: List[str]
@@ -14,27 +21,49 @@ class GraphState(TypedDict):
     recursion_count: int
     last_step_time: float
 
-# Helper function to format sources for display
+
 def format_sources_for_display(documents) -> str:
+    """
+    Format document sources for display in the response.
+
+    Args:
+        documents: List of document objects with metadata
+
+    Returns:
+        Formatted string containing source information
+    """
     if not documents:
         return ""
+
     sources = {}
     for doc in documents:
         file_name = os.path.basename(doc.metadata.get('file_name', 'Unknown File'))[:-3]
         if file_name not in sources:
             sources[file_name] = {'file': file_name}
+
     source_lines = ["\n\nSources:"]
     for source in sources.values():
         source_lines.append(f"{source['file']}")
+
     return "\n".join(source_lines)
 
-# Main graph builder function
-def build_graph(retriever):
 
-    # Document retrieval node
+def build_graph(retriever):
+    """
+    Build and compile the QA workflow graph.
+
+    Args:
+        retriever: Document retriever instance
+
+    Returns:
+        Compiled workflow graph
+    """
+
     def retrieve(state):
+        """Retrieve relevant documents for the question."""
         step_start = time.time()
         print("\n--- Executing RETRIEVE Node ---")
+
         if "last_step_time" in state:
             duration = step_start - state["last_step_time"]
             print(f"Time since last step: {duration:.3f}s")
@@ -43,15 +72,17 @@ def build_graph(retriever):
 
         total_time = time.time() - step_start
         print(f"RETRIEVE completed in {total_time:.3f}s total\n")
+
         return {
             **state,
             "documents": docs,
             "last_step_time": time.time()
         }
 
-    # Response generation
     def generate(state):
+        """Generate response based on retrieved documents."""
         step_start = time.time()
+
         if "last_step_time" in state:
             duration = step_start - state["last_step_time"]
             print(f"Time since last step: {duration:.3f}s")
@@ -98,42 +129,49 @@ def build_graph(retriever):
             "last_step_time": time.time()
         }
 
-    # Query transformation node for improving retrieval
     def transform_query(state):
+        """Transform and improve the query for better retrieval."""
         step_start = time.time()
+
         if "last_step_time" in state:
             duration = step_start - state["last_step_time"]
             print(f"Time since last step: {duration:.3f}s")
-        
+
         rewrite_start = time.time()
         better_q = question_rewriter.invoke({"question": state["question"]})
         rewrite_time = time.time() - rewrite_start
-        
+
         total_time = time.time() - step_start
         print(f"Query rewrite took {rewrite_time:.3f}s")
         print(f"Original: '{state['question']}'")
         print(f"Rewritten: '{better_q}'")
         print(f"TRANSFORM_QUERY completed in {total_time:.3f}s total\n")
-        
-        return {**state, "question": better_q, "recursion_count": state["recursion_count"] + 1, "last_step_time": time.time()}
 
-    # Response quality evaluation node
+        return {
+            **state,
+            "question": better_q,
+            "recursion_count": state["recursion_count"] + 1,
+            "last_step_time": time.time()
+        }
+
     def grade_generation(state):
+        """Evaluate the quality of the generated response."""
         step_start = time.time()
+
         if "last_step_time" in state:
             duration = step_start - state["last_step_time"]
             print(f"Time since last step: {duration:.3f}s")
-        
+
         print(f"Current recursion count: {state['recursion_count']}")
-        
+
         if state["recursion_count"] >= 2:
             total_time = time.time() - step_start
             print(f"Recursion limit reached ({state['recursion_count']}), forcing end")
             print(f"GRADE_GENERATION completed in {total_time:.3f}s total\n")
             return "useful"
-        
+
         documents_content_list = " ".join([doc.page_content for doc in state["documents"]]) if len(state["documents"]) > 0 else ""
-        
+
         generation_to_check = state["generation"].split("\n\n**Source")[0]
 
         hallucination_start = time.time()
@@ -147,13 +185,13 @@ def build_graph(retriever):
         h_score = "yes" if "yes" in h_score_response.lower() else "no"
         hallucination_time = time.time() - hallucination_start
         print(f"Hallucination check: {h_score} (took {hallucination_time:.3f}s)")
-        
+
         if h_score == "no":
             total_time = time.time() - step_start
             print(f"Failed hallucination check")
             print(f"GRADE_GENERATION completed in {total_time:.3f}s total\n")
             return "not useful"
-        
+
         answer_start = time.time()
         a_score_response = answer_grader.invoke({
             "question": state["question"],
@@ -165,26 +203,26 @@ def build_graph(retriever):
         a_score = "yes" if "yes" in a_score_response.lower() else "no"
         answer_time = time.time() - answer_start
         print(f"Answer quality check: {a_score} (took {answer_time:.3f}s)")
-        
+
         decision = "useful" if a_score == "yes" else "not useful"
         total_time = time.time() - step_start
         print(f"Final decision: {decision}")
         print(f"GRADE_GENERATION completed in {total_time:.3f}s total\n")
-        
+
         return decision
-    
-    # Workflow entry point for state initialization
+
     def entry_point(state):
+        """Initialize the workflow state."""
         step_start = time.time()
         print("--- QA Graph Entry Point ---")
-        
-        history = state.get("conversation_history") 
+
+        history = state.get("conversation_history")
         if not isinstance(history, list):
             history = []
-        
+
         total_time = time.time() - step_start
         print(f"ENTRY_POINT completed in {total_time:.3f}s total\n")
-    
+
         return {
             "question": state["question"],
             "documents": [],
@@ -192,7 +230,7 @@ def build_graph(retriever):
             "recursion_count": 0,
             "last_step_time": time.time()
         }
-    
+
     # Graph construction and workflow definition
     wf = StateGraph(GraphState)
     wf.add_node("retrieve", retrieve)
@@ -214,5 +252,5 @@ def build_graph(retriever):
     })
 
     wf.add_edge("unsure", END)
-    
+
     return wf.compile()

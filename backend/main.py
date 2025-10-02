@@ -14,9 +14,9 @@ import uuid
 # Add the app directory to the path to import existing modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'app'))
 
-from enhanced_pdf_to_md import pdf_to_markdown
-from chunks import create_retriever
-from qa_graph import build_graph as build_qa_graph
+from pdf_converter import pdf_to_markdown
+from document_processor import create_retriever
+from qa_workflow import build_graph as build_qa_graph
 
 app = FastAPI(title="AI Assistant API", version="1.0.0")
 
@@ -274,7 +274,7 @@ async def qa_chat_stream(message: ChatMessage):
                 # Stream the LLM response directly
                 print("Starting LLM streaming...")
                 stream_start = time.time()
-                from llm_nodes import generator
+                from llm_prompts import generator
                 stream_generator = generator.stream({
                     "conversation_history": message.conversation_history,
                     "document": documents_text,
@@ -296,7 +296,7 @@ async def qa_chat_stream(message: ChatMessage):
 
                 # Add sources after the main content
                 print("Adding source information...")
-                from qa_graph import format_sources_for_display
+                from qa_workflow import format_sources_for_display
                 source_info = format_sources_for_display(docs)
                 if source_info:
                     print(f"Source info: {source_info}")

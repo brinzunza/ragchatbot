@@ -1,14 +1,15 @@
-from langchain_community.document_loaders import TextLoader
-from langchain_community.vectorstores import FAISS
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_nomic.embeddings import NomicEmbeddings
 import os
 import glob
 import time
 from typing import List
+
+from langchain_community.document_loaders import TextLoader
+from langchain_community.vectorstores import FAISS
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_nomic.embeddings import NomicEmbeddings
 from langchain_community.chat_models import ChatOllama
 
-# Main retriever creation function that processes markdown files into searchable chunks
+
 def create_retriever(
     md_folder_path: str,
     faiss_db_path: str = "faiss_db",
@@ -16,6 +17,22 @@ def create_retriever(
     chunk_overlap: int = 200,
     top_k: int = 3
 ):
+    """
+    Create a document retriever from markdown files.
+
+    This function processes markdown files, splits them into chunks, enhances them with
+    AI-generated summaries, and creates a FAISS vector database for semantic search.
+
+    Args:
+        md_folder_path: Path to the folder containing markdown files
+        faiss_db_path: Path where the FAISS database will be stored
+        chunk_size: Size of text chunks in characters
+        chunk_overlap: Overlap between chunks in characters
+        top_k: Number of top documents to retrieve
+
+    Returns:
+        Configured retriever instance
+    """
     print(f"\n--- CREATE_RETRIEVER START ---")
     print(f"MD folder path: {md_folder_path}")
     print(f"FAISS DB path: {faiss_db_path}")
@@ -72,7 +89,7 @@ def create_retriever(
 
         file_load_time = time.time() - file_load_start
         print(f"All files loaded in {file_load_time:.3f}s (total docs: {len(all_documents)})")
-        
+
         if not all_documents:
             raise ValueError("No documents were successfully loaded")
 
@@ -99,7 +116,11 @@ def create_retriever(
             chunk_start = time.time()
             print(f"Processing chunk {i+1}/{amount} from {os.path.basename(chunk.metadata['source_file'])}")
 
-            summary = generate_summary_with_ollama(chunk.page_content, surrounding_text, chunk.metadata['source_file'])
+            summary = _generate_summary_with_ollama(
+                chunk.page_content,
+                surrounding_text,
+                chunk.metadata['source_file']
+            )
             chunk_time = time.time() - chunk_start
 
             original_size = len(chunk.page_content)
@@ -131,36 +152,40 @@ def create_retriever(
     print(f"--- CREATE_RETRIEVER END ---\n")
     return retriever
 
-# Generate summaries for chunks using Ollama LLM
-def generate_summary_with_ollama(chunk_text, surrounding_text, file_name):
+
+def _generate_summary_with_ollama(chunk_text, surrounding_text, file_name):
+    """
+    Generate a summary for a text chunk using the Ollama LLM.
+
+    Args:
+        chunk_text: The text chunk to summarize
+        surrounding_text: Text from surrounding chunks for context
+        file_name: Name of the source file
+
+    Returns:
+        Generated summary string
+    """
     prompt = f"""
     You are given a text chunk from a document. Below is the chunk content, the surrounding chunks, and the file name.
-    
+
     Chunk Content:
     {chunk_text}
-    
+
     Surrounding Chunks:
     {surrounding_text}
-    
+
     File Name:
     {file_name}
-    
+
     Please provide a concise summary of the chunk content in the context of the surrounding chunks and the file name. Do not include any additional information or formatting.
     """
-    
-    summary = ollama_model_call(prompt)
-    
-    return summary.content
 
-# Helper function to call Ollama model
-def ollama_model_call(prompt):
     llm = ChatOllama(
         model="llama3.2:latest",
         temperature=0.1,
         num_predict=1000,
         streaming=False
     )
-    
+
     response = llm.invoke(prompt)
-    
-    return response
+    return response.content

@@ -1,4 +1,4 @@
-from langchain.prompts import PromptTemplate
+from langchain.prompts import PromptTemplate, ChatPromptTemplate
 from langchain_ollama import ChatOllama
 from langchain_core.output_parsers import StrOutputParser
 
@@ -7,19 +7,25 @@ from langchain_core.output_parsers import StrOutputParser
 MODEL_NAME = "llama3.2:latest"
 
 # LLM instance with streaming support
+# Note: Ollama (0.1.33+) automatically enables prompt caching (KV cache reuse) 
+# when the prefix of the prompt remains identical between calls.
 llm = ChatOllama(
     model=MODEL_NAME,
     temperature=0,
     num_predict=2000,
-    streaming=True
+    streaming=True,
+    num_ctx=8192 # Ensure context window is large enough for caching
 )
 
 
 # QUESTION ANSWERING COMPONENTS
 
 # Main response generator
-generator_prompt = PromptTemplate(
-    template="""You are an expert assistant trained to answer questions using the provided documents.
+# OPTIMIZATION: 'Knowledge Base' is placed BEFORE 'Conversation Context' 
+# because it is the largest static block. If follow-up questions use the 
+# same documents, the KV cache for the documents will be reused even as history grows.
+generator_prompt = ChatPromptTemplate.from_messages([
+    ("system", """You are an expert assistant trained to answer questions using the provided documents.
     You provide comprehensive technical guidance based on the uploaded documentation and context. Your answers
     should rely only on the content and context of this unless explicitly instructed otherwise. If the user's
     question falls outside the document's scope, politely inform them that the information is not covered. Never provide code or command line instructions.
@@ -27,48 +33,52 @@ generator_prompt = PromptTemplate(
     Your task is to answer the user's question based on the provided "Knowledge Base".
 
     Provide a detailed, comprehensive answer to the user's question. Be direct, comprehensive, thorough, and accurate.
-    Provide a complete answer without preamble or closing remarks. Just provide the answer as plain text.
+    Provide a complete answer without preamble or closing remarks. Just provide the answer as plain text."""),
+    ("user", """Knowledge Base: 
+    {document}
 
-    Conversation Context: {conversation_history}
+    Conversation Context: 
+    {conversation_history}
 
-    Knowledge Base: {document}
+    Question: 
+    {question}
 
-    Question: {question}
-
-    Answer:""",
-    input_variables=["conversation_history", "document", "question"]
-)
+    Answer:""")
+])
 generator = generator_prompt | llm | StrOutputParser()
 
 
 # Hallucination detection component
-hallucination_prompt = PromptTemplate(
-    template="""Evaluate whether the Answer is mentioned in either the "Documents" OR the "Conversation Context". The answer can be found separated between the Documents or Conversation Context, they do not need to be found together.
+hallucination_prompt = ChatPromptTemplate.from_messages([
+    ("system", "Evaluate whether the Answer is mentioned in either the 'Documents' OR the 'Conversation Context'."),
+    ("user", """Documents: 
+    {documents}
 
-    Documents: {documents}
+    Conversation Context: 
+    {conversation_history}
 
-    Conversation Context: {conversation_history}
-
-    Answer to evaluate: {generation}
+    Answer to evaluate: 
+    {generation}
 
     Score 'no' if it contains claims not mentioned in or contradictions from either the provided Documents or Conversation Context.
     Else Score 'yes'.
 
-    {{"score": "yes"}} or {{"score": "no"}}""",
-    input_variables=["generation", "documents", "conversation_history"],
-)
+    Return only {{"score": "yes"}} or {{"score": "no"}}""")
+])
 hallucination_grader = hallucination_prompt | llm | StrOutputParser()
 
 
 # Answer quality evaluation component
-answer_prompt = PromptTemplate(
-    template="""Does this answer adequately address the question? If the conversation context is relevant, consider it.
+answer_prompt = ChatPromptTemplate.from_messages([
+    ("system", "Does this answer adequately address the question? Consider the conversation context if relevant."),
+    ("user", """Answer to evaluate: 
+    {generation}
 
-    Answer to evaluate: {generation}
+    Conversation context: 
+    {conversation_history}
 
-    Conversation context: {conversation_history}
-
-    Question: {question}
+    Question: 
+    {question}
 
     Score 'yes' if the answer:
     - Provides relevant detail
@@ -76,19 +86,14 @@ answer_prompt = PromptTemplate(
 
     Score 'no' if off-topic.
 
-    {{"score": "yes"}} or {{"score": "no"}}""",
-    input_variables=["generation", "question", "conversation_history"],
-)
+    Return only {{"score": "yes"}} or {{"score": "no"}}""")
+])
 answer_grader = answer_prompt | llm | StrOutputParser()
 
 
 # Query rewriting component
-rewrite_prompt = PromptTemplate(
-    template="""Rephrase this question below so it is clear and self-contained.
-
-    Original Question: {question}
-
-    Output:""",
-    input_variables=["question"],
-)
+rewrite_prompt = ChatPromptTemplate.from_messages([
+    ("system", "Rephrase the user's question so it is clear and self-contained for a search engine."),
+    ("user", "Original Question: {question}\n\nOutput:")
+])
 question_rewriter = rewrite_prompt | llm | StrOutputParser()

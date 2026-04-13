@@ -13,6 +13,19 @@ A functional RAG (Retrieval Augmented Generation) chatbot that processes PDF inp
 ## How it Works
 The chatbot utilizes Retrieval Augmented Generation (RAG) to combine the power of large language models with external knowledge from your uploaded PDFs. When a question is asked, relevant information is first retrieved from the processed PDF, and then used to augment the language model's response for more precise and informed answers.
 
+## Problems Solved (vs. Basic RAG)
+Compared to basic retrieval pipelines, this system implements **Agentic/Corrective RAG** to solve common failures:
+- **Lost in Context (Parsing Errors):** Uses **Contextual Retrieval** to prefix every chunk with an AI-generated summary, ensuring the model understands the global context of every snippet.
+- **The "Black Box" of Hallucinations:** Implements a **Self-Grading Loop** via LangGraph that verifies if the generated answer is grounded in the documents and actually answers the user's question.
+- **Missing Visual Information:** Features a **Multimodal Pipeline** that extracts images from PDFs and uses a vision model (`gemma3`) to generate text descriptions, allowing the system to "see" charts and diagrams.
+- **Static Retrieval Failure:** Includes **Query Transformation** to automatically rewrite poorly phrased user questions into more effective search queries when initial retrieval fails.
+
+## Key Optimizations
+- **Streaming Response (SSE):** Uses Server-Sent Events to stream tokens in real-time, providing a snappy, modern chat experience.
+- **Fully Local & Private:** Powered by **Ollama** and **FAISS**, ensuring all data stays on your machine with zero API costs.
+- **Markdown-First Processing:** Converts PDFs into structured Markdown to preserve headers and tables, leading to better semantic chunking.
+- **Modular Design:** Decouples the core RAG engine from the delivery layer, supporting both a FastAPI/React stack and a standalone Streamlit app.
+
 ## requirements
 
 - **python 3.8+** with pip

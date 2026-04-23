@@ -1,8 +1,8 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict
 import os
 import shutil
 import time
@@ -10,6 +10,7 @@ import json
 import traceback
 import sys
 import uuid
+from datetime import datetime
 
 # Add the app directory to the path to import existing modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'app'))
@@ -33,6 +34,9 @@ app.add_middleware(
 faiss_db_path = "faiss_db"
 files_path = "files"
 
+# Upload progress tracking
+upload_progress: Dict[str, Dict] = {}
+
 # Pydantic models for request/response
 class ChatMessage(BaseModel):
     content: str
@@ -50,6 +54,20 @@ class DatabaseStatus(BaseModel):
     exists: bool
     file_count: int
 
+class UploadResponse(BaseModel):
+    upload_id: str
+    status: str
+    message: str
+
+class UploadProgress(BaseModel):
+    upload_id: str
+    status: str  # 'uploading', 'converting', 'indexing', 'completed', 'error'
+    progress: int  # 0-100
+    message: str
+    current_file: Optional[str] = None
+    total_files: int = 0
+    processed_files: int = 0
+
 
 # Helper functions
 def ensure_directories():
@@ -64,6 +82,78 @@ def get_database_status():
     if os.path.exists(files_path):
         file_count = len([f for f in os.listdir(files_path) if f.endswith('.pdf')])
     return DatabaseStatus(exists=exists, file_count=file_count)
+
+def process_documents_background(upload_id: str, file_paths: List[str]):
+    """Background task to process uploaded documents"""
+    try:
+        total_files = len(file_paths)
+        print(f"\n=== BACKGROUND PROCESSING START (ID: {upload_id}) ===")
+
+        # Stage 1: Convert PDFs to markdown
+        upload_progress[upload_id] = {
+            "status": "converting",
+            "progress": 10,
+            "message": "converting PDFs to markdown",
+            "current_file": None,
+            "total_files": total_files,
+            "processed_files": 0
+        }
+
+        print("Converting PDFs to markdown...")
+        conversion_start = time.time()
+        for i, pdf_path in enumerate(file_paths):
+            filename = os.path.basename(pdf_path)
+            print(f"Converting PDF {i+1}/{total_files}: {filename}")
+
+            upload_progress[upload_id]["current_file"] = filename
+            upload_progress[upload_id]["processed_files"] = i
+            upload_progress[upload_id]["progress"] = 10 + int((i / total_files) * 40)
+
+            pdf_to_markdown(pdf_path)
+            print(f"  - Converted: {filename}")
+
+        conversion_time = time.time() - conversion_start
+        print(f"PDF conversion completed in {conversion_time:.3f}s")
+
+        # Stage 2: Build FAISS database
+        upload_progress[upload_id] = {
+            "status": "indexing",
+            "progress": 50,
+            "message": "building vector database",
+            "current_file": None,
+            "total_files": total_files,
+            "processed_files": total_files
+        }
+
+        print("Building FAISS database...")
+        db_start = time.time()
+        create_retriever(files_path, faiss_db_path)
+        db_time = time.time() - db_start
+        print(f"FAISS database created in {db_time:.3f}s")
+
+        # Complete
+        upload_progress[upload_id] = {
+            "status": "completed",
+            "progress": 100,
+            "message": f"successfully processed {total_files} files",
+            "current_file": None,
+            "total_files": total_files,
+            "processed_files": total_files
+        }
+
+        print(f"=== BACKGROUND PROCESSING COMPLETE (ID: {upload_id}) ===\n")
+
+    except Exception as e:
+        print(f"ERROR in background processing: {str(e)}")
+        traceback.print_exc()
+        upload_progress[upload_id] = {
+            "status": "error",
+            "progress": 0,
+            "message": f"processing failed: {str(e)}",
+            "current_file": None,
+            "total_files": total_files,
+            "processed_files": 0
+        }
 
 
 # API Routes
@@ -96,20 +186,33 @@ async def reset_database():
         raise HTTPException(status_code=500, detail=f"failed to reset database: {str(e)}")
 
 @app.post("/documents/upload")
-async def upload_documents(files: List[UploadFile] = File(...)):
-    """Upload PDF documents and create database"""
+async def upload_documents(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)):
+    """Upload PDF documents and process in background"""
     try:
         print(f"\n=== DOCUMENT UPLOAD START ===")
         print(f"Number of files received: {len(files)}")
 
         upload_start = time.time()
         ensure_directories()
-        print(f"Directories ensured: {files_path}, {faiss_db_path}")
+
+        # Generate upload ID
+        upload_id = str(uuid.uuid4())
+        print(f"Upload ID: {upload_id}")
+
+        # Initialize progress tracking
+        upload_progress[upload_id] = {
+            "status": "uploading",
+            "progress": 0,
+            "message": "receiving files",
+            "current_file": None,
+            "total_files": len(files),
+            "processed_files": 0
+        }
 
         # Save uploaded files
         uploaded_files = []
         for i, file in enumerate(files):
-            print(f"Processing file {i+1}/{len(files)}: {file.filename}")
+            print(f"Receiving file {i+1}/{len(files)}: {file.filename}")
 
             if not file.filename.endswith('.pdf'):
                 print(f"ERROR: Invalid file type for {file.filename}")
@@ -122,39 +225,46 @@ async def upload_documents(files: List[UploadFile] = File(...)):
                 file_size = len(content)
                 f.write(content)
             uploaded_files.append(file_path)
+
+            # Update progress
+            upload_progress[upload_id]["progress"] = int((i + 1) / len(files) * 10)
+            upload_progress[upload_id]["current_file"] = file.filename
             print(f"  - Saved: {file.filename} ({file_size:,} bytes)")
 
         upload_time = time.time() - upload_start
         print(f"File upload completed in {upload_time:.3f}s")
+        print(f"Starting background processing for {len(uploaded_files)} files")
 
-        # Process PDFs to markdown
-        print("Converting PDFs to markdown...")
-        conversion_start = time.time()
-        for i, pdf_path in enumerate(uploaded_files):
-            print(f"Converting PDF {i+1}/{len(uploaded_files)}: {os.path.basename(pdf_path)}")
-            pdf_to_markdown(pdf_path)
-            print(f"  - Converted: {os.path.basename(pdf_path)}")
+        # Start background processing
+        background_tasks.add_task(process_documents_background, upload_id, uploaded_files)
 
-        conversion_time = time.time() - conversion_start
-        print(f"PDF conversion completed in {conversion_time:.3f}s")
-
-        # Create retriever (this builds the FAISS database)
-        print("Building FAISS database...")
-        db_start = time.time()
-        create_retriever(files_path, faiss_db_path)
-        db_time = time.time() - db_start
-        print(f"FAISS database created in {db_time:.3f}s")
-
-        total_time = time.time() - upload_start
-        print(f"Total upload process time: {total_time:.3f}s")
-        print(f"=== DOCUMENT UPLOAD END ===\n")
-
-        return StatusResponse(status="success", message=f"uploaded {len(uploaded_files)} files and created database")
+        return UploadResponse(
+            upload_id=upload_id,
+            status="processing",
+            message=f"received {len(uploaded_files)} files, processing in background"
+        )
 
     except Exception as e:
         print(f"ERROR in upload_documents: {str(e)}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"failed to upload documents: {str(e)}")
+
+@app.get("/documents/upload/status/{upload_id}")
+async def get_upload_status(upload_id: str):
+    """Get the status of an upload/processing job"""
+    if upload_id not in upload_progress:
+        raise HTTPException(status_code=404, detail="upload not found")
+
+    progress_data = upload_progress[upload_id]
+    return UploadProgress(
+        upload_id=upload_id,
+        status=progress_data["status"],
+        progress=progress_data["progress"],
+        message=progress_data["message"],
+        current_file=progress_data.get("current_file"),
+        total_files=progress_data["total_files"],
+        processed_files=progress_data["processed_files"]
+    )
 
 @app.post("/qa/chat")
 async def qa_chat(message: ChatMessage):

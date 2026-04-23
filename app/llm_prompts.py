@@ -1,6 +1,6 @@
 from langchain_core.prompts import PromptTemplate, ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from .llm_config import get_llm
+from llm_config import get_llm
 
 
 # LLM instance with streaming support

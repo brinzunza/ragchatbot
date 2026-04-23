@@ -1,6 +1,7 @@
 # Dependencies
 node_modules/
 backend_env/
+files/
 
 # Python cache
 __pycache__/

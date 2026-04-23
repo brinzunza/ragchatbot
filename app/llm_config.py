@@ -41,12 +41,16 @@ def get_llm(temperature: float = 0, streaming: bool = True, **kwargs) -> BaseCha
 
         print(f"🌐 Using OpenAI API with model: {model_name}")
 
+        # Filter out Ollama-specific parameters that OpenAI doesn't support
+        openai_kwargs = {k: v for k, v in kwargs.items()
+                        if k not in ['num_predict', 'num_ctx']}
+
         return ChatOpenAI(
             model=model_name,
             temperature=temperature,
             streaming=streaming,
             api_key=api_key,
-            **kwargs
+            **openai_kwargs
         )
     else:
         # Fallback to local Ollama

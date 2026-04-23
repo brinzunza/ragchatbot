@@ -7,7 +7,7 @@ from langchain_community.document_loaders import TextLoader
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_nomic.embeddings import NomicEmbeddings
-from .llm_config import get_llm
+from llm_config import get_llm
 
 
 def create_retriever(

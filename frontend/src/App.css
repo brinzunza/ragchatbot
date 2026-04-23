@@ -142,6 +142,65 @@ body {
   text-decoration: underline;
 }
 
+.file-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Upload progress */
+.upload-progress {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid #000000;
+  text-align: left;
+}
+
+.progress-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.progress-message {
+  text-transform: lowercase;
+  font-size: 12px;
+}
+
+.progress-percentage {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.progress-bar-container {
+  width: 100%;
+  height: 4px;
+  background-color: #e0e0e0;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background-color: #000000;
+  transition: width 0.3s ease;
+}
+
+.progress-file {
+  font-size: 10px;
+  color: #666666;
+  margin-top: 0.5rem;
+  text-transform: lowercase;
+}
+
+.progress-count {
+  font-size: 10px;
+  color: #666666;
+  margin-top: 0.25rem;
+  text-transform: lowercase;
+}
+
 /* Messages */
 .messages {
   flex: 1;

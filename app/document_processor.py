@@ -7,7 +7,7 @@ from langchain_community.document_loaders import TextLoader
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_nomic.embeddings import NomicEmbeddings
-from langchain_community.chat_models import ChatOllama
+from .llm_config import get_llm
 
 
 def create_retriever(
@@ -155,7 +155,7 @@ def create_retriever(
 
 def _generate_summary_with_ollama(chunk_text, surrounding_text, file_name):
     """
-    Generate a summary for a text chunk using the Ollama LLM.
+    Generate a summary for a text chunk using configured LLM (OpenAI or Ollama).
 
     Args:
         chunk_text: The text chunk to summarize
@@ -180,11 +180,10 @@ def _generate_summary_with_ollama(chunk_text, surrounding_text, file_name):
     Please provide a concise summary of the chunk content in the context of the surrounding chunks and the file name. Do not include any additional information or formatting.
     """
 
-    llm = ChatOllama(
-        model="llama3.2:latest",
+    llm = get_llm(
         temperature=0.1,
-        num_predict=1000,
-        streaming=False
+        streaming=False,
+        num_predict=1000  # Only used by Ollama
     )
 
     response = llm.invoke(prompt)

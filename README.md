@@ -22,7 +22,7 @@ Compared to basic retrieval pipelines, this system implements **Agentic/Correcti
 
 ## Key Optimizations
 - **Streaming Response (SSE):** Uses Server-Sent Events to stream tokens in real-time, providing a snappy, modern chat experience.
-- **Fully Local & Private:** Powered by **Ollama** and **FAISS**, ensuring all data stays on your machine with zero API costs.
+- **Flexible LLM Support:** Works with both **OpenAI API** (cloud) and **Ollama** (local). Automatically uses OpenAI if API key is configured, otherwise falls back to local Ollama for complete privacy with zero API costs.
 - **Markdown-First Processing:** Converts PDFs into structured Markdown to preserve headers and tables, leading to better semantic chunking.
 - **Modular Design:** Decouples the core RAG engine from the delivery layer, supporting both a FastAPI/React stack and a standalone Streamlit app.
 
@@ -30,14 +30,38 @@ Compared to basic retrieval pipelines, this system implements **Agentic/Correcti
 
 - **python 3.8+** with pip
 - **node.js 16+** with npm
-- **ollama** running on localhost:11434
+- **Either:**
+  - **OpenAI API key** (cloud-based, recommended for best performance)
+  - **OR Ollama** running locally (free, private, no API costs)
 
 ## quick start
 
-### 1. start ollama (required)
-```bash
-ollama serve
-```
+### 1. choose your llm provider
+
+#### option a: use openai api (recommended)
+1. Copy `.env.example` to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+2. Add your OpenAI API key to `.env`:
+   ```
+   OPENAI_API_KEY=sk-your-api-key-here
+   ```
+3. (Optional) Customize the model:
+   ```
+   OPENAI_MODEL=gpt-4o-mini
+   ```
+
+#### option b: use local ollama (free, private)
+1. Start Ollama:
+   ```bash
+   ollama serve
+   ```
+2. Pull the required model:
+   ```bash
+   ollama pull llama3.2:latest
+   ```
+3. No `.env` file needed - the system will automatically detect and use Ollama
 
 ### 2. start backend (terminal 1)
 ```bash

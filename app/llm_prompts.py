@@ -1,20 +1,17 @@
-from langchain.prompts import PromptTemplate, ChatPromptTemplate
-from langchain_ollama import ChatOllama
+from langchain_core.prompts import PromptTemplate, ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from .llm_config import get_llm
 
-
-# Model configuration
-MODEL_NAME = "llama3.2:latest"
 
 # LLM instance with streaming support
-# Note: Ollama (0.1.33+) automatically enables prompt caching (KV cache reuse) 
+# Note: When using OpenAI, native prompt caching is automatically used.
+# When using Ollama (0.1.33+), KV cache reuse is automatically enabled
 # when the prefix of the prompt remains identical between calls.
-llm = ChatOllama(
-    model=MODEL_NAME,
+llm = get_llm(
     temperature=0,
-    num_predict=2000,
     streaming=True,
-    num_ctx=8192 # Ensure context window is large enough for caching
+    num_predict=2000,  # Only used by Ollama
+    num_ctx=8192  # Only used by Ollama - ensure context window is large enough for caching
 )
 
 

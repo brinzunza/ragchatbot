@@ -33,19 +33,26 @@ def format_sources_for_display(documents) -> str:
         Formatted string containing source information
     """
     if not documents:
+        print("  [format_sources] No documents provided")
         return ""
 
+    print(f"  [format_sources] Processing {len(documents)} documents")
     sources = {}
-    for doc in documents:
+    for i, doc in enumerate(documents):
+        print(f"  [format_sources] Doc {i+1} metadata: {doc.metadata}")
         file_name = os.path.basename(doc.metadata.get('file_name', 'Unknown File'))[:-3]
+        print(f"  [format_sources] Extracted file_name: {file_name}")
         if file_name not in sources:
             sources[file_name] = {'file': file_name}
 
+    print(f"  [format_sources] Final sources dict: {sources}")
     source_lines = ["\n\nSources:"]
     for source in sources.values():
         source_lines.append(f"{source['file']}")
 
-    return "\n".join(source_lines)
+    result = "\n".join(source_lines)
+    print(f"  [format_sources] Final result: {repr(result)}")
+    return result
 
 
 def build_graph(retriever):

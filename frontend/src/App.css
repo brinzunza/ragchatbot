@@ -147,9 +147,22 @@ body {
   cursor: not-allowed;
 }
 
+/* Upload queue */
+.upload-queue {
+  margin: 1rem 0;
+  text-align: left;
+}
+
+.queue-header {
+  font-size: 12px;
+  font-weight: 400;
+  margin-bottom: 0.5rem;
+  text-transform: lowercase;
+}
+
 /* Upload progress */
 .upload-progress {
-  margin: 1rem 0;
+  margin: 0.5rem 0;
   padding: 1rem;
   border: 1px solid #000000;
   text-align: left;
@@ -239,12 +252,56 @@ body {
   text-transform: none;
 }
 
-
 .response-time {
   font-size: 10px;
   text-align: center;
   margin-top: 0.5rem;
   color: #000000;
+}
+
+/* Sources dropdown */
+.sources-container {
+  margin-top: 0.5rem;
+  max-width: 80%;
+}
+
+.sources-toggle {
+  background: none;
+  border: none;
+  color: #666666;
+  cursor: pointer;
+  padding: 0.25rem 0;
+  font-size: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 300;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  text-transform: lowercase;
+}
+
+.sources-toggle:hover {
+  color: #000000;
+}
+
+.sources-toggle .arrow {
+  display: inline-block;
+  transition: transform 0.2s ease;
+  font-size: 8px;
+}
+
+.sources-toggle .arrow.expanded {
+  transform: rotate(90deg);
+}
+
+.sources-content {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  border-left: 1px solid #e0e0e0;
+  font-size: 10px;
+  color: #666666;
+  white-space: pre-wrap;
+  text-transform: none;
 }
 
 /* Chat form */

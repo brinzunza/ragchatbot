@@ -9,9 +9,10 @@ function App() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [dbStatus, setDbStatus] = useState({ exists: false, file_count: 0 });
-  const [uploadProgress, setUploadProgress] = useState(null);
+  const [uploadQueue, setUploadQueue] = useState([]);
+  const [expandedSources, setExpandedSources] = useState({});
   const messagesEndRef = useRef(null);
-  const uploadIntervalRef = useRef(null);
+  const uploadIntervalsRef = useRef({});
 
   // Check database and data status on mount
   useEffect(() => {
@@ -26,9 +27,9 @@ function App() {
   // Cleanup upload polling on unmount
   useEffect(() => {
     return () => {
-      if (uploadIntervalRef.current) {
-        clearInterval(uploadIntervalRef.current);
-      }
+      Object.values(uploadIntervalsRef.current).forEach(interval => {
+        clearInterval(interval);
+      });
     };
   }, []);
 
@@ -46,39 +47,62 @@ function App() {
       const response = await axios.get(`${API_BASE}/documents/upload/status/${uploadId}`);
       const status = response.data;
 
-      setUploadProgress({
-        progress: status.progress,
-        status: status.status,
-        message: status.message,
-        currentFile: status.current_file,
-        totalFiles: status.total_files,
-        processedFiles: status.processed_files
-      });
+      // Update the specific upload in the queue
+      setUploadQueue(prev => prev.map(upload =>
+        upload.uploadId === uploadId
+          ? {
+              ...upload,
+              progress: status.progress,
+              status: status.status,
+              message: status.message,
+              currentFile: status.current_file,
+              totalFiles: status.total_files,
+              processedFiles: status.processed_files
+            }
+          : upload
+      ));
 
-      // If completed or error, stop polling
+      // If completed or error, stop polling and remove from queue after delay
       if (status.status === 'completed') {
-        clearInterval(uploadIntervalRef.current);
-        uploadIntervalRef.current = null;
+        if (uploadIntervalsRef.current[uploadId]) {
+          clearInterval(uploadIntervalsRef.current[uploadId]);
+          delete uploadIntervalsRef.current[uploadId];
+        }
         setMessages(prev => [...prev, {
           role: 'system',
           content: `successfully processed ${status.total_files} documents`
         }]);
         checkStatuses();
-        setTimeout(() => setUploadProgress(null), 2000);
+
+        // Remove from queue after 3 seconds
+        setTimeout(() => {
+          setUploadQueue(prev => prev.filter(u => u.uploadId !== uploadId));
+        }, 3000);
       } else if (status.status === 'error') {
-        clearInterval(uploadIntervalRef.current);
-        uploadIntervalRef.current = null;
+        if (uploadIntervalsRef.current[uploadId]) {
+          clearInterval(uploadIntervalsRef.current[uploadId]);
+          delete uploadIntervalsRef.current[uploadId];
+        }
         setMessages(prev => [...prev, {
           role: 'system',
           content: `upload failed: ${status.message}`
         }]);
-        setTimeout(() => setUploadProgress(null), 3000);
+
+        // Remove from queue after 5 seconds
+        setTimeout(() => {
+          setUploadQueue(prev => prev.filter(u => u.uploadId !== uploadId));
+        }, 5000);
       }
     } catch (error) {
       console.error('failed to poll upload status:', error);
-      clearInterval(uploadIntervalRef.current);
-      uploadIntervalRef.current = null;
-      setUploadProgress(null);
+      if (uploadIntervalsRef.current[uploadId]) {
+        clearInterval(uploadIntervalsRef.current[uploadId]);
+        delete uploadIntervalsRef.current[uploadId];
+      }
+      // Remove failed upload from queue
+      setTimeout(() => {
+        setUploadQueue(prev => prev.filter(u => u.uploadId !== uploadId));
+      }, 3000);
     }
   };
 
@@ -86,20 +110,21 @@ function App() {
     const files = event.target.files;
     if (!files || files.length === 0) return;
 
-    // Clear any previous upload progress
-    if (uploadIntervalRef.current) {
-      clearInterval(uploadIntervalRef.current);
-    }
+    // Generate a temporary ID for this upload
+    const tempId = `temp-${Date.now()}`;
+    const fileNames = Array.from(files).map(f => f.name).join(', ');
 
-    // Initialize upload progress
-    setUploadProgress({
+    // Add upload to queue immediately
+    setUploadQueue(prev => [...prev, {
+      uploadId: tempId,
       progress: 0,
       status: 'uploading',
       message: 'uploading files...',
       currentFile: null,
       totalFiles: files.length,
-      processedFiles: 0
-    });
+      processedFiles: 0,
+      fileNames: fileNames
+    }]);
 
     try {
       const formData = new FormData();
@@ -112,17 +137,30 @@ function App() {
         headers: { 'Content-Type': 'multipart/form-data' },
         onUploadProgress: (progressEvent) => {
           const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-          setUploadProgress(prev => ({
-            ...prev,
-            progress: Math.min(percentCompleted, 10), // Cap at 10% for upload phase
-            message: 'uploading files...'
-          }));
+          setUploadQueue(prev => prev.map(upload =>
+            upload.uploadId === tempId
+              ? {
+                  ...upload,
+                  progress: Math.min(percentCompleted, 10),
+                  message: 'uploading files...'
+                }
+              : upload
+          ));
         }
       });
 
-      // Start polling for background processing status
+      // Get the real upload ID from backend
       const uploadId = response.data.upload_id;
-      uploadIntervalRef.current = setInterval(() => {
+
+      // Update the queue with the real upload ID
+      setUploadQueue(prev => prev.map(upload =>
+        upload.uploadId === tempId
+          ? { ...upload, uploadId: uploadId }
+          : upload
+      ));
+
+      // Start polling for background processing status
+      uploadIntervalsRef.current[uploadId] = setInterval(() => {
         pollUploadStatus(uploadId);
       }, 500); // Poll every 500ms
 
@@ -130,7 +168,8 @@ function App() {
       pollUploadStatus(uploadId);
 
     } catch (error) {
-      setUploadProgress(null);
+      // Remove from queue on error
+      setUploadQueue(prev => prev.filter(u => u.uploadId !== tempId));
       setMessages(prev => [...prev, {
         role: 'system',
         content: `upload failed: ${error.response?.data?.detail || error.message}`
@@ -152,6 +191,7 @@ function App() {
     const assistantMessage = {
       role: 'assistant',
       content: '',
+      sources: null,
       response_time: null,
       streaming: true
     };
@@ -218,6 +258,19 @@ function App() {
                   }
                   return newMessages;
                 });
+              } else if (data.type === 'sources' && data.content) {
+                // Store sources separately without adding to content
+                setMessages(prev => {
+                  const newMessages = [...prev];
+                  const lastMessage = newMessages[newMessages.length - 1];
+                  if (lastMessage.role === 'assistant' && lastMessage.streaming) {
+                    newMessages[newMessages.length - 1] = {
+                      ...lastMessage,
+                      sources: data.content
+                    };
+                  }
+                  return newMessages;
+                });
               } else if (data.type === 'complete') {
                 // Mark streaming as complete and add response time
                 setMessages(prev => {
@@ -228,7 +281,8 @@ function App() {
                       ...lastMessage,
                       streaming: false,
                       response_time: data.response_time,
-                      content: accumulatedContent
+                      content: accumulatedContent,
+                      sources: lastMessage.sources // Explicitly preserve sources
                     };
                   }
                   return newMessages;
@@ -263,15 +317,29 @@ function App() {
   };
 
   const resetDatabase = async () => {
+    // Stop all upload polling
+    Object.values(uploadIntervalsRef.current).forEach(interval => {
+      clearInterval(interval);
+    });
+    uploadIntervalsRef.current = {};
+
+    // Clear upload queue
+    setUploadQueue([]);
+
     setLoading(true);
     try {
-      await axios.post(`${API_BASE}/database/reset`);
+      await axios.post(`${API_BASE}/database/reset`, {}, {
+        timeout: 10000 // 10 second timeout
+      });
       setMessages([{ role: 'system', content: 'database reset successfully' }]);
       checkStatuses();
     } catch (error) {
+      const errorMsg = error.code === 'ECONNABORTED'
+        ? 'reset timed out - please try again'
+        : `reset failed: ${error.response?.data?.detail || error.message}`;
       setMessages(prev => [...prev, {
         role: 'system',
-        content: `reset failed: ${error.response?.data?.detail || error.message}`
+        content: errorMsg
       }]);
     }
     setLoading(false);
@@ -319,35 +387,46 @@ function App() {
                   accept=".pdf"
                   onChange={handleFileUpload}
                   className="file-input"
-                  disabled={uploadProgress !== null}
                 />
               </div>
             </div>
           )}
 
-          {/* Upload progress bar */}
-          {uploadProgress && (
-            <div className="upload-progress">
-              <div className="progress-info">
-                <span className="progress-message">{uploadProgress.message}</span>
-                <span className="progress-percentage">{uploadProgress.progress}%</span>
+          {/* Upload queue */}
+          {uploadQueue.length > 0 && (
+            <div className="upload-queue">
+              <div className="queue-header">
+                upload queue ({uploadQueue.length})
               </div>
-              <div className="progress-bar-container">
-                <div
-                  className="progress-bar-fill"
-                  style={{ width: `${uploadProgress.progress}%` }}
-                />
-              </div>
-              {uploadProgress.currentFile && (
-                <div className="progress-file">
-                  processing: {uploadProgress.currentFile}
+              {uploadQueue.map((upload) => (
+                <div key={upload.uploadId} className="upload-progress">
+                  <div className="progress-info">
+                    <span className="progress-message">{upload.message}</span>
+                    <span className="progress-percentage">{upload.progress}%</span>
+                  </div>
+                  <div className="progress-bar-container">
+                    <div
+                      className="progress-bar-fill"
+                      style={{ width: `${upload.progress}%` }}
+                    />
+                  </div>
+                  {upload.currentFile && (
+                    <div className="progress-file">
+                      processing: {upload.currentFile}
+                    </div>
+                  )}
+                  {upload.totalFiles > 0 && (
+                    <div className="progress-count">
+                      {upload.processedFiles} / {upload.totalFiles} files
+                    </div>
+                  )}
+                  {upload.status === 'uploading' && !upload.currentFile && (
+                    <div className="progress-file">
+                      {upload.fileNames}
+                    </div>
+                  )}
                 </div>
-              )}
-              {uploadProgress.totalFiles > 0 && (
-                <div className="progress-count">
-                  {uploadProgress.processedFiles} / {uploadProgress.totalFiles} files
-                </div>
-              )}
+              ))}
             </div>
           )}
 
@@ -363,6 +442,25 @@ function App() {
                     </div>
                   )}
                 </div>
+                {message.sources && message.role === 'assistant' && (
+                  <div className="sources-container">
+                    <button
+                      className="sources-toggle"
+                      onClick={() => setExpandedSources(prev => ({
+                        ...prev,
+                        [index]: !prev[index]
+                      }))}
+                    >
+                      <span className={`arrow ${expandedSources[index] ? 'expanded' : ''}`}>▸</span>
+                      sources
+                    </button>
+                    {expandedSources[index] && (
+                      <div className="sources-content">
+                        {message.sources}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
             <div ref={messagesEndRef} />

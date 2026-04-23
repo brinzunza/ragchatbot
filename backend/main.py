@@ -131,6 +131,32 @@ def process_documents_background(upload_id: str, file_paths: List[str]):
         db_time = time.time() - db_start
         print(f"FAISS database created in {db_time:.3f}s")
 
+        # Stage 3: Cleanup - delete PDF files to save storage
+        upload_progress[upload_id] = {
+            "status": "cleanup",
+            "progress": 90,
+            "message": "cleaning up temporary files",
+            "current_file": None,
+            "total_files": total_files,
+            "processed_files": total_files
+        }
+
+        print("Cleaning up PDF files...")
+        cleanup_start = time.time()
+        deleted_count = 0
+        for pdf_path in file_paths:
+            try:
+                if os.path.exists(pdf_path):
+                    file_size = os.path.getsize(pdf_path)
+                    os.remove(pdf_path)
+                    deleted_count += 1
+                    print(f"  - Deleted: {os.path.basename(pdf_path)} ({file_size:,} bytes)")
+            except Exception as e:
+                print(f"  - Warning: Could not delete {os.path.basename(pdf_path)}: {str(e)}")
+
+        cleanup_time = time.time() - cleanup_start
+        print(f"Cleanup completed in {cleanup_time:.3f}s ({deleted_count}/{total_files} files deleted)")
+
         # Complete
         upload_progress[upload_id] = {
             "status": "completed",
@@ -370,7 +396,7 @@ async def qa_chat_stream(message: ChatMessage):
                 # First get documents (retrieval phase)
                 print("Retrieving relevant documents...")
                 retrieval_start = time.time()
-                docs = retriever.get_relevant_documents(message.content)
+                docs = retriever.invoke(message.content)
                 retrieval_time = time.time() - retrieval_start
                 print(f"Retrieved {len(docs)} documents in {retrieval_time:.3f}s")
 
@@ -410,7 +436,7 @@ async def qa_chat_stream(message: ChatMessage):
                 source_info = format_sources_for_display(docs)
                 if source_info:
                     print(f"Source info: {source_info}")
-                    yield f"data: {json.dumps({'content': source_info, 'type': 'chunk'})}\n\n"
+                    yield f"data: {json.dumps({'content': source_info, 'type': 'sources'})}\n\n"
 
                 # Send completion signal with total time
                 end_time = time.time()

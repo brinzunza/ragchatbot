@@ -1,12 +1,20 @@
 import React from 'react';
-import { TrashIcon, RefreshIcon } from './Icons';
+import { TrashIcon, RefreshIcon, FileTextIcon } from './Icons';
 
-function Sidebar({ onClearChat, onResetDatabase, loading, dbStatus }) {
+function Sidebar({ onClearChat, onResetDatabase, onOpenLibrary, loading, dbStatus }) {
   return (
     <div className="sidebar">
       <div className="sidebar-brand">
         <span className="sidebar-brand-mark">A</span>
         Athena
+      </div>
+
+      <div className="sidebar-section">
+        <div className="sidebar-label">Knowledge Base</div>
+        <button onClick={onOpenLibrary} className="nav-item" disabled={loading}>
+          <FileTextIcon />
+          Documents
+        </button>
       </div>
 
       <div className="sidebar-section">

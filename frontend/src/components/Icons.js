@@ -48,3 +48,16 @@ export const FileTextIcon = () => (
     <path d="M9 1.5v3h3M6 8h4M6 10.5h4" />
   </svg>
 );
+
+export const CloseIcon = () => (
+  <svg {...base} width={14} height={14}>
+    <path d="M3.5 3.5l9 9M12.5 3.5l-9 9" />
+  </svg>
+);
+
+export const SearchIcon = () => (
+  <svg {...base} width={14} height={14}>
+    <circle cx="6.8" cy="6.8" r="4.3" />
+    <path d="M13 13l-3-3" />
+  </svg>
+);

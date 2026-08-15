@@ -1,6 +1,8 @@
 import os
 import glob
+import shutil
 import time
+from datetime import datetime
 from typing import List
 
 from langchain_community.document_loaders import TextLoader
@@ -8,6 +10,101 @@ from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_nomic.embeddings import NomicEmbeddings
 from llm_config import get_llm
+
+
+def _load_vectorstore(faiss_db_path: str) -> FAISS:
+    """
+    Load an existing FAISS vector database from disk.
+
+    Args:
+        faiss_db_path: Path where the FAISS database is stored
+
+    Returns:
+        Loaded FAISS vectorstore instance
+    """
+    embedding_model = NomicEmbeddings(model="nomic-embed-text-v1.5", inference_mode="local")
+    return FAISS.load_local(faiss_db_path, embedding_model, allow_dangerous_deserialization=True)
+
+
+def list_documents(faiss_db_path: str, files_path: str) -> List[dict]:
+    """
+    List indexed documents with their chunk counts and upload dates.
+
+    Args:
+        faiss_db_path: Path where the FAISS database is stored
+        files_path: Path to the folder containing the cached markdown files
+
+    Returns:
+        List of dicts with 'name', 'chunk_count', and 'uploaded_at' keys
+    """
+    if not os.path.exists(faiss_db_path):
+        return []
+
+    vectorstore = _load_vectorstore(faiss_db_path)
+
+    chunk_counts: dict = {}
+    for doc in vectorstore.docstore._dict.values():
+        source = doc.metadata.get('file_name', 'Unknown')
+        chunk_counts[source] = chunk_counts.get(source, 0) + 1
+
+    documents = []
+    for source, count in chunk_counts.items():
+        name = os.path.basename(source)
+        if name.endswith('.md'):
+            name = name[:-3]
+        uploaded_at = ""
+        if os.path.exists(source):
+            uploaded_at = datetime.fromtimestamp(os.path.getmtime(source)).isoformat()
+        documents.append({
+            'name': name,
+            'chunk_count': count,
+            'uploaded_at': uploaded_at
+        })
+
+    documents.sort(key=lambda d: d['name'].lower())
+    return documents
+
+
+def delete_document(name: str, faiss_db_path: str, files_path: str) -> bool:
+    """
+    Delete a single document's chunks from the FAISS index without rebuilding
+    the rest of the index, and remove its cached markdown file.
+
+    Args:
+        name: Display name of the document (matches what list_documents returns)
+        faiss_db_path: Path where the FAISS database is stored
+        files_path: Path to the folder containing the cached markdown files
+
+    Returns:
+        True if the document was found and deleted, False if it wasn't found
+    """
+    if not os.path.exists(faiss_db_path):
+        return False
+
+    target_path = os.path.join(files_path, f"{name}.md")
+    vectorstore = _load_vectorstore(faiss_db_path)
+
+    ids_to_delete = [
+        doc_id for doc_id, doc in vectorstore.docstore._dict.items()
+        if doc.metadata.get('file_name') == target_path
+    ]
+
+    if not ids_to_delete:
+        return False
+
+    vectorstore.delete(ids_to_delete)
+
+    if os.path.exists(target_path):
+        os.remove(target_path)
+
+    if len(vectorstore.index_to_docstore_id) == 0:
+        # No documents left - remove the index entirely rather than persist an
+        # empty one, so /database/status correctly reports exists=False.
+        shutil.rmtree(faiss_db_path)
+    else:
+        vectorstore.save_local(faiss_db_path)
+
+    return True
 
 
 def create_retriever(
@@ -38,19 +135,19 @@ def create_retriever(
     print(f"FAISS DB path: {faiss_db_path}")
     print(f"Chunk size: {chunk_size}, overlap: {chunk_overlap}, top_k: {top_k}")
 
-    embedding_start = time.time()
-    embedding_model = NomicEmbeddings(model="nomic-embed-text-v1.5", inference_mode="local")
-    embedding_init_time = time.time() - embedding_start
-    print(f"Embedding model initialized in {embedding_init_time:.3f}s")
-
     # Load existing FAISS database if it exists, otherwise create a new one
     if os.path.exists(faiss_db_path):
         print(f"Loading existing FAISS database from {faiss_db_path}")
         load_start = time.time()
-        vectorstore = FAISS.load_local(faiss_db_path, embedding_model, allow_dangerous_deserialization=True)
+        vectorstore = _load_vectorstore(faiss_db_path)
         load_time = time.time() - load_start
         print(f"FAISS database loaded in {load_time:.3f}s")
     else:
+        embedding_start = time.time()
+        embedding_model = NomicEmbeddings(model="nomic-embed-text-v1.5", inference_mode="local")
+        embedding_init_time = time.time() - embedding_start
+        print(f"Embedding model initialized in {embedding_init_time:.3f}s")
+
         print(f"Creating new FAISS database...")
         create_start = time.time()
 

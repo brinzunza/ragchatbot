@@ -16,7 +16,7 @@ from datetime import datetime
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'app'))
 
 from pdf_converter import pdf_to_markdown
-from document_processor import create_retriever
+from document_processor import create_retriever, list_documents, delete_document
 from qa_workflow import build_graph as build_qa_graph
 
 app = FastAPI(title="AI Assistant API", version="1.0.0")
@@ -67,6 +67,11 @@ class UploadProgress(BaseModel):
     current_file: Optional[str] = None
     total_files: int = 0
     processed_files: int = 0
+
+class DocumentInfo(BaseModel):
+    name: str
+    chunk_count: int
+    uploaded_at: str
 
 
 # Helper functions
@@ -210,6 +215,31 @@ async def reset_database():
         return StatusResponse(status="success", message="database reset successfully")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"failed to reset database: {str(e)}")
+
+@app.get("/documents")
+async def get_documents():
+    """List indexed documents with chunk counts and upload dates"""
+    try:
+        docs = list_documents(faiss_db_path, files_path)
+        return [DocumentInfo(**doc) for doc in docs]
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"failed to list documents: {str(e)}")
+
+@app.delete("/documents/{name}")
+async def remove_document(name: str):
+    """Delete a single document from the index"""
+    try:
+        deleted = delete_document(name, faiss_db_path, files_path)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"document not found: {name}")
+        ensure_directories()
+        return StatusResponse(status="success", message=f"deleted {name}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"failed to delete document: {str(e)}")
 
 @app.post("/documents/upload")
 async def upload_documents(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)):

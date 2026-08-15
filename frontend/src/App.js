@@ -6,9 +6,10 @@ import UploadDropzone from './components/UploadDropzone';
 import UploadQueue from './components/UploadQueue';
 import MessageList from './components/MessageList';
 import ChatInput from './components/ChatInput';
+import DocumentLibraryModal from './components/DocumentLibraryModal';
 import { UploadCloudIcon } from './components/Icons';
 
-const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8000';
+export const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8000';
 
 function App() {
   const [messages, setMessages] = useState([]);
@@ -17,6 +18,7 @@ function App() {
   const [dbStatus, setDbStatus] = useState({ exists: false, file_count: 0 });
   const [uploadQueue, setUploadQueue] = useState([]);
   const [expandedSources, setExpandedSources] = useState({});
+  const [showLibrary, setShowLibrary] = useState(false);
   const messagesEndRef = useRef(null);
   const uploadIntervalsRef = useRef({});
 
@@ -360,9 +362,17 @@ function App() {
         <Sidebar
           onClearChat={clearChat}
           onResetDatabase={resetDatabase}
+          onOpenLibrary={() => setShowLibrary(true)}
           loading={loading}
           dbStatus={dbStatus}
         />
+
+        {showLibrary && (
+          <DocumentLibraryModal
+            onClose={() => setShowLibrary(false)}
+            onDocumentDeleted={checkStatuses}
+          />
+        )}
 
         <div className="main">
           <div className="title">Document Q&amp;A</div>

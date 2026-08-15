@@ -1,6 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import './App.css';
+import Sidebar from './components/Sidebar';
+import UploadDropzone from './components/UploadDropzone';
+import UploadQueue from './components/UploadQueue';
+import MessageList from './components/MessageList';
+import ChatInput from './components/ChatInput';
+import { UploadCloudIcon } from './components/Icons';
 
 const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8000';
 
@@ -70,7 +76,7 @@ function App() {
         }
         setMessages(prev => [...prev, {
           role: 'system',
-          content: `successfully processed ${status.total_files} documents`
+          content: `Successfully processed ${status.total_files} document${status.total_files === 1 ? '' : 's'}`
         }]);
         checkStatuses();
 
@@ -85,7 +91,7 @@ function App() {
         }
         setMessages(prev => [...prev, {
           role: 'system',
-          content: `upload failed: ${status.message}`
+          content: `Upload failed: ${status.message}`
         }]);
 
         // Remove from queue after 5 seconds
@@ -106,8 +112,7 @@ function App() {
     }
   };
 
-  const handleFileUpload = async (event) => {
-    const files = event.target.files;
+  const handleFileUpload = async (files) => {
     if (!files || files.length === 0) return;
 
     // Generate a temporary ID for this upload
@@ -119,7 +124,7 @@ function App() {
       uploadId: tempId,
       progress: 0,
       status: 'uploading',
-      message: 'uploading files...',
+      message: 'Uploading files...',
       currentFile: null,
       totalFiles: files.length,
       processedFiles: 0,
@@ -142,7 +147,7 @@ function App() {
               ? {
                   ...upload,
                   progress: Math.min(percentCompleted, 10),
-                  message: 'uploading files...'
+                  message: 'Uploading files...'
                 }
               : upload
           ));
@@ -172,11 +177,9 @@ function App() {
       setUploadQueue(prev => prev.filter(u => u.uploadId !== tempId));
       setMessages(prev => [...prev, {
         role: 'system',
-        content: `upload failed: ${error.response?.data?.detail || error.message}`
+        content: `Upload failed: ${error.response?.data?.detail || error.message}`
       }]);
     }
-
-    event.target.value = '';
   };
 
   const handleSubmit = async (e) => {
@@ -303,7 +306,7 @@ function App() {
         const newMessages = prev.slice(0, -1);
         return [...newMessages, {
           role: 'assistant',
-          content: `error: ${error.message}`
+          content: `Error: ${error.message}`
         }];
       });
     }
@@ -331,12 +334,12 @@ function App() {
       await axios.post(`${API_BASE}/database/reset`, {}, {
         timeout: 10000 // 10 second timeout
       });
-      setMessages([{ role: 'system', content: 'database reset successfully' }]);
+      setMessages([{ role: 'system', content: 'Database reset successfully' }]);
       checkStatuses();
     } catch (error) {
       const errorMsg = error.code === 'ECONNABORTED'
-        ? 'reset timed out - please try again'
-        : `reset failed: ${error.response?.data?.detail || error.message}`;
+        ? 'Reset timed out - please try again'
+        : `Reset failed: ${error.response?.data?.detail || error.message}`;
       setMessages(prev => [...prev, {
         role: 'system',
         content: errorMsg
@@ -345,143 +348,57 @@ function App() {
     setLoading(false);
   };
 
+  const toggleSources = (index) => {
+    setExpandedSources(prev => ({ ...prev, [index]: !prev[index] }));
+  };
+
   const canChat = dbStatus.exists;
 
   return (
     <div className="app">
       <div className="container">
-        {/* Sidebar */}
-        <div className="sidebar">
-          <div className="section">
-            <p>ai assistant</p>
-          </div>
+        <Sidebar
+          onClearChat={clearChat}
+          onResetDatabase={resetDatabase}
+          loading={loading}
+          dbStatus={dbStatus}
+        />
 
-          <div className="section">
-            <button onClick={clearChat} className="text-button">
-              clear chat
-            </button>
-            <button onClick={resetDatabase} className="text-button">
-              reset database
-            </button>
-          </div>
-
-          <div className="section">
-            <p>pdf document analysis</p>
-          </div>
-        </div>
-
-        {/* Main content */}
         <div className="main">
-          <div className="title">
-            document q&a
-          </div>
+          <div className="title">Document Q&amp;A</div>
+          <div className="subtitle">Ask questions grounded in your uploaded PDFs</div>
 
-          {/* Status and file upload */}
-          {!canChat && (
-            <div className="upload-section">
-              <div>
-                <p>upload pdf documents to begin</p>
-                <input
-                  type="file"
-                  multiple
-                  accept=".pdf"
-                  onChange={handleFileUpload}
-                  className="file-input"
-                />
+          {!canChat && messages.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">
+                <UploadCloudIcon size={22} />
               </div>
+              <h2>Upload documents to begin</h2>
+              <p>Add one or more PDFs and Athena will index them for grounded, cited answers.</p>
+              <UploadDropzone onFiles={handleFileUpload} disabled={loading} />
+              <UploadQueue uploadQueue={uploadQueue} />
             </div>
-          )}
-
-          {/* Upload queue */}
-          {uploadQueue.length > 0 && (
-            <div className="upload-queue">
-              <div className="queue-header">
-                upload queue ({uploadQueue.length})
-              </div>
-              {uploadQueue.map((upload) => (
-                <div key={upload.uploadId} className="upload-progress">
-                  <div className="progress-info">
-                    <span className="progress-message">{upload.message}</span>
-                    <span className="progress-percentage">{upload.progress}%</span>
-                  </div>
-                  <div className="progress-bar-container">
-                    <div
-                      className="progress-bar-fill"
-                      style={{ width: `${upload.progress}%` }}
-                    />
-                  </div>
-                  {upload.currentFile && (
-                    <div className="progress-file">
-                      processing: {upload.currentFile}
-                    </div>
-                  )}
-                  {upload.totalFiles > 0 && (
-                    <div className="progress-count">
-                      {upload.processedFiles} / {upload.totalFiles} files
-                    </div>
-                  )}
-                  {upload.status === 'uploading' && !upload.currentFile && (
-                    <div className="progress-file">
-                      {upload.fileNames}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Chat messages */}
-          <div className="messages">
-            {messages.map((message, index) => (
-              <div key={index} className={`message ${message.role}`}>
-                <div className={`message-content ${message.streaming ? 'streaming' : ''}`}>
-                  {message.content}
-                  {message.response_time && (
-                    <div className="response-time">
-                      {message.response_time.toFixed(2)}s
-                    </div>
-                  )}
-                </div>
-                {message.sources && message.role === 'assistant' && (
-                  <div className="sources-container">
-                    <button
-                      className="sources-toggle"
-                      onClick={() => setExpandedSources(prev => ({
-                        ...prev,
-                        [index]: !prev[index]
-                      }))}
-                    >
-                      <span className={`arrow ${expandedSources[index] ? 'expanded' : ''}`}>▸</span>
-                      sources
-                    </button>
-                    {expandedSources[index] && (
-                      <div className="sources-content">
-                        {message.sources}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-            <div ref={messagesEndRef} />
-          </div>
-
-          {/* Chat input */}
-          <form onSubmit={handleSubmit} className="chat-form">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={canChat ? 'ask about your documents' : 'upload pdf files first'}
-              disabled={!canChat || loading}
-              className="chat-input"
-            />
-          </form>
-
-          {loading && (
-            <div className="loading">
-              processing...
-            </div>
+          ) : (
+            <>
+              <UploadDropzone onFiles={handleFileUpload} disabled={loading} compact={canChat} />
+              <UploadQueue uploadQueue={uploadQueue} />
+              <MessageList
+                messages={messages}
+                expandedSources={expandedSources}
+                onToggleSources={toggleSources}
+                messagesEndRef={messagesEndRef}
+              />
+              <ChatInput
+                input={input}
+                setInput={setInput}
+                onSubmit={handleSubmit}
+                canChat={canChat}
+                loading={loading}
+              />
+              {loading && !messages[messages.length - 1]?.streaming && (
+                <div className="loading">Working...</div>
+              )}
+            </>
           )}
         </div>
       </div>

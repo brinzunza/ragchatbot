@@ -1,0 +1,9 @@
+{
+  "short_name": "Athena",
+  "name": "Athena — Document Q&A",
+  "icons": [],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#ffffff",
+  "background_color": "#ffffff"
+}

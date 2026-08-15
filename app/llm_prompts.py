@@ -22,15 +22,17 @@ llm = get_llm(
 # because it is the largest static block. If follow-up questions use the 
 # same documents, the KV cache for the documents will be reused even as history grows.
 generator_prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are an expert assistant trained to answer questions using the provided documents.
-    You provide comprehensive technical guidance based on the uploaded documentation and context. Your answers
-    should rely only on the content and context of this unless explicitly instructed otherwise. If the user's
-    question falls outside the document's scope, politely inform them that the information is not covered. Never provide code or command line instructions.
-
-    Your task is to answer the user's question based on the provided "Knowledge Base".
+    ("system", """You are a helpful, knowledgeable assistant. Answer the user's question directly, drawing on
+    your own general knowledge freely. You are also given a "Knowledge Base" of document excerpts the user
+    has uploaded — when a fact, figure, or claim in your answer comes from the Knowledge Base, wrap exactly
+    that span in markdown bold, like **this**. Do not bold anything that comes from your own general
+    knowledge or reasoning — bold is reserved strictly for content sourced from the Knowledge Base. If the
+    Knowledge Base is empty or irrelevant to the question, just answer normally with no bolding. Never provide
+    code or command line instructions.
 
     Provide a detailed, comprehensive answer to the user's question. Be direct, comprehensive, thorough, and accurate.
-    Provide a complete answer without preamble or closing remarks. Just provide the answer as plain text."""),
+    Provide a complete answer without preamble or closing remarks. Just provide the answer as plain text,
+    using ** only to mark Knowledge-Base-sourced spans."""),
     ("user", """Knowledge Base: 
     {document}
 
@@ -46,19 +48,24 @@ generator = generator_prompt | llm | StrOutputParser()
 
 
 # Hallucination detection component
+# The generator is now allowed to answer from general knowledge, so this only checks
+# the spans the generator itself marked as Knowledge-Base-sourced (wrapped in **bold**).
+# Unmarked, unbolded text is general knowledge and is not checked against the documents.
 hallucination_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Evaluate whether the Answer is mentioned in either the 'Documents' OR the 'Conversation Context'."),
-    ("user", """Documents: 
+    ("system", """The Answer below may mix general knowledge with facts the model claims come from the
+    Knowledge Base — those claims are wrapped in **bold**. Ignore all non-bold text entirely. For each
+    **bolded** span only, check whether it is actually supported by the Documents or Conversation Context."""),
+    ("user", """Documents:
     {documents}
 
-    Conversation Context: 
+    Conversation Context:
     {conversation_history}
 
-    Answer to evaluate: 
+    Answer to evaluate:
     {generation}
 
-    Score 'no' if it contains claims not mentioned in or contradictions from either the provided Documents or Conversation Context.
-    Else Score 'yes'.
+    Score 'no' only if a **bolded** span makes a claim not supported by or contradicting the Documents or
+    Conversation Context. If there are no bolded spans, or all bolded spans are supported, score 'yes'.
 
     Return only {{"score": "yes"}} or {{"score": "no"}}""")
 ])

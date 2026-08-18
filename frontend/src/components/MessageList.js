@@ -1,7 +1,7 @@
 import React from 'react';
 import Message from './Message';
 
-function MessageList({ messages, expandedSources, onToggleSources, messagesEndRef }) {
+function MessageList({ messages, expandedSources, onToggleSources, onViewSource, messagesEndRef }) {
   return (
     <div className="messages">
       {messages.map((message, index) => (
@@ -10,6 +10,7 @@ function MessageList({ messages, expandedSources, onToggleSources, messagesEndRe
           message={message}
           expanded={!!expandedSources[index]}
           onToggleSources={() => onToggleSources(index)}
+          onViewSource={onViewSource}
         />
       ))}
       <div ref={messagesEndRef} />

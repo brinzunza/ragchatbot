@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronRightIcon } from './Icons';
+import { ChevronRightIcon, FileTextIcon } from './Icons';
 
 // Splits on **bold** spans (Knowledge-Base-sourced content, per the generator's system prompt)
 // and renders them as <strong>. Everything else renders as plain text.
@@ -13,7 +13,9 @@ function renderContent(text) {
   });
 }
 
-function Message({ message, expanded, onToggleSources }) {
+function Message({ message, expanded, onToggleSources, onViewSource }) {
+  const sources = message.sources || [];
+
   return (
     <div className={`message ${message.role}`}>
       <div className={`message-content ${message.streaming ? 'streaming' : ''}`}>
@@ -22,15 +24,29 @@ function Message({ message, expanded, onToggleSources }) {
           <div className="response-time">{message.response_time.toFixed(2)}s</div>
         )}
       </div>
-      {message.sources && message.role === 'assistant' && (
+      {sources.length > 0 && message.role === 'assistant' && (
         <div className="sources-container">
           <button className="sources-toggle" onClick={onToggleSources}>
             <span className={`arrow ${expanded ? 'expanded' : ''}`}>
               <ChevronRightIcon />
             </span>
-            Sources
+            {sources.length === 1 ? 'Source' : `Sources (${sources.length})`}
           </button>
-          {expanded && <div className="sources-content">{message.sources}</div>}
+          {expanded && (
+            <div className="source-chips">
+              {sources.map((source, i) => (
+                <button
+                  key={i}
+                  className="source-chip"
+                  onClick={() => onViewSource(source)}
+                  title={`View the passage cited from ${source.name}`}
+                >
+                  <FileTextIcon />
+                  {source.name}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

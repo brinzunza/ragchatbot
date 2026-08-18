@@ -226,6 +226,24 @@ async def get_documents():
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"failed to list documents: {str(e)}")
 
+@app.get("/documents/{name}/content")
+async def get_document_content(name: str):
+    """Get the raw markdown content of a document, for citation highlighting"""
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="invalid document name")
+    try:
+        path = os.path.join(files_path, f"{name}.md")
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail=f"document not found: {name}")
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return {"name": name, "content": content}
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"failed to read document: {str(e)}")
+
 @app.delete("/documents/{name}")
 async def remove_document(name: str):
     """Delete a single document from the index"""
@@ -460,13 +478,15 @@ async def qa_chat_stream(message: ChatMessage):
                 stream_time = time.time() - stream_start
                 print(f"LLM streaming completed in {stream_time:.3f}s ({chunk_count} chunks)")
 
-                # Add sources after the main content
+                # Add structured sources after the main content - one entry per
+                # retrieved chunk (not deduplicated by file) so the frontend can
+                # cite and highlight every chunk that contributed to the answer
                 print("Adding source information...")
-                from qa_workflow import format_sources_for_display
-                source_info = format_sources_for_display(docs)
-                if source_info:
-                    print(f"Source info: {source_info}")
-                    yield f"data: {json.dumps({'content': source_info, 'type': 'sources'})}\n\n"
+                from qa_workflow import get_sources_metadata
+                sources = get_sources_metadata(docs)
+                if sources:
+                    print(f"Source info: {sources}")
+                    yield f"data: {json.dumps({'content': sources, 'type': 'sources'})}\n\n"
 
                 # Send completion signal with total time
                 end_time = time.time()

@@ -7,6 +7,7 @@ import UploadQueue from './components/UploadQueue';
 import MessageList from './components/MessageList';
 import ChatInput from './components/ChatInput';
 import DocumentLibraryModal from './components/DocumentLibraryModal';
+import DocumentViewerModal from './components/DocumentViewerModal';
 import { UploadCloudIcon } from './components/Icons';
 
 export const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8000';
@@ -19,6 +20,7 @@ function App() {
   const [uploadQueue, setUploadQueue] = useState([]);
   const [expandedSources, setExpandedSources] = useState({});
   const [showLibrary, setShowLibrary] = useState(false);
+  const [viewingSource, setViewingSource] = useState(null);
   const messagesEndRef = useRef(null);
   const uploadIntervalsRef = useRef({});
 
@@ -374,6 +376,15 @@ function App() {
           />
         )}
 
+        {viewingSource && (
+          <DocumentViewerModal
+            name={viewingSource.name}
+            startIndex={viewingSource.start_index}
+            length={viewingSource.length}
+            onClose={() => setViewingSource(null)}
+          />
+        )}
+
         <div className="main">
           <div className="title">Document Q&amp;A</div>
           <div className="subtitle">Ask questions grounded in your uploaded PDFs</div>
@@ -396,6 +407,7 @@ function App() {
                 messages={messages}
                 expandedSources={expandedSources}
                 onToggleSources={toggleSources}
+                onViewSource={setViewingSource}
                 messagesEndRef={messagesEndRef}
               />
               <ChatInput

@@ -55,6 +55,38 @@ def format_sources_for_display(documents) -> str:
     return result
 
 
+def get_sources_metadata(documents) -> List[dict]:
+    """
+    Build structured per-chunk source metadata for citation highlighting.
+
+    Unlike format_sources_for_display, this keeps one entry per retrieved
+    chunk (not deduplicated by file) so the frontend can cite - and highlight
+    the exact span of - every chunk that was actually used, even when
+    multiple chunks come from different documents or the same one.
+
+    Args:
+        documents: List of document objects with metadata
+
+    Returns:
+        List of {name, start_index, length} dicts, one per chunk
+    """
+    if not documents:
+        return []
+
+    sources = []
+    for doc in documents:
+        file_path = doc.metadata.get('file_name', 'Unknown File')
+        name = os.path.basename(file_path)
+        if name.endswith('.md'):
+            name = name[:-3]
+        sources.append({
+            'name': name,
+            'start_index': doc.metadata.get('start_index', 0),
+            'length': doc.metadata.get('chunk_length', 0),
+        })
+    return sources
+
+
 def build_graph(retriever):
     """
     Build and compile the QA workflow graph.

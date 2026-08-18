@@ -6,14 +6,22 @@ function UploadQueue({ uploadQueue }) {
   return (
     <div className="upload-queue">
       <div className="queue-header">Uploading ({uploadQueue.length})</div>
-      {uploadQueue.map((upload) => (
+      {uploadQueue.map((upload) => {
+        const active = upload.status !== 'completed' && upload.status !== 'error';
+        return (
         <div key={upload.uploadId} className="upload-progress">
           <div className="progress-info">
-            <span>{upload.message}</span>
+            <span className="progress-message">
+              {active && <span className="progress-live-dot" />}
+              {upload.message}
+            </span>
             <span className="progress-percentage">{upload.progress}%</span>
           </div>
           <div className="progress-bar-container">
-            <div className="progress-bar-fill" style={{ width: `${upload.progress}%` }} />
+            <div
+              className={`progress-bar-fill ${active ? 'active' : ''}`}
+              style={{ width: `${upload.progress}%` }}
+            />
           </div>
           {upload.currentFile && (
             <div className="progress-file">Processing: {upload.currentFile}</div>
@@ -25,7 +33,8 @@ function UploadQueue({ uploadQueue }) {
             <div className="progress-file">{upload.fileNames}</div>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

@@ -6,7 +6,7 @@ from PIL import Image
 import streamlit as st
 
 from pdf_converter import pdf_to_markdown
-from document_processor import create_retriever
+from document_processor import get_retriever, index_documents, has_documents
 from qa_workflow import build_graph as build_qa_graph
 
 
@@ -182,7 +182,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-FAISS_DB_PATH = "faiss_db"
+CHROMA_DB_PATH = "chroma_db"
 
 # Sidebar
 with st.sidebar:
@@ -194,8 +194,8 @@ with st.sidebar:
         st.rerun()
 
     if st.button("reset database"):
-        if os.path.exists(FAISS_DB_PATH):
-            shutil.rmtree(FAISS_DB_PATH)
+        if os.path.exists(CHROMA_DB_PATH):
+            shutil.rmtree(CHROMA_DB_PATH)
         if os.path.exists("files"):
             shutil.rmtree("files")
         for key in st.session_state.keys():
@@ -210,7 +210,7 @@ with st.sidebar:
 st.markdown('<div class="main-title">document q&a</div>', unsafe_allow_html=True)
 
 # Database initialization flow
-if not os.path.exists(FAISS_DB_PATH):
+if not has_documents(CHROMA_DB_PATH):
     st.markdown('<div class="minimal-card"><p>upload pdf documents to begin</p></div>', unsafe_allow_html=True)
 
     if not os.path.exists("files"):
@@ -231,7 +231,7 @@ if not os.path.exists(FAISS_DB_PATH):
                     f.write(uploaded_file.getbuffer())
                 pdf_to_markdown(pdf_file_path)
 
-            create_retriever("files", FAISS_DB_PATH)
+            index_documents("files", CHROMA_DB_PATH)
 
         st.markdown('<div class="minimal-card"><p>database created</p></div>', unsafe_allow_html=True)
         st.rerun()
@@ -289,7 +289,7 @@ else:
                     else:
                         break
 
-                retriever = create_retriever("files", FAISS_DB_PATH)
+                retriever = get_retriever(CHROMA_DB_PATH, top_k=3)
                 app = build_qa_graph(retriever)
 
                 inputs = {

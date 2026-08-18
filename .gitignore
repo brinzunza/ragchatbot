@@ -2,6 +2,8 @@
 node_modules/
 backend_env/
 files/
+chroma_db/
+faiss_db/
 
 # Python cache
 __pycache__/

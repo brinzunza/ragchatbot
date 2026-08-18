@@ -1,50 +1,106 @@
 import os
 import glob
-import shutil
+import threading
 import time
 from datetime import datetime
 from typing import List
 
+import chromadb
+from langchain_chroma import Chroma
+from langchain_core.embeddings import Embeddings
 from langchain_community.document_loaders import TextLoader
-from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_nomic.embeddings import NomicEmbeddings
 from llm_config import get_llm
 
+_COLLECTION_NAME = "documents"
 
-def _load_vectorstore(faiss_db_path: str) -> FAISS:
+# Guards the "check what's already indexed, then add only what's new" sequence
+# so two uploads racing each other don't both decide the same file is new and
+# redundantly re-summarize it. Chroma's own writes are safe to interleave
+# (each add_documents call is a real incremental insert against the shared
+# on-disk SQLite store, not a load-mutate-save-the-whole-thing cycle), so this
+# lock is about avoiding wasted duplicate work, not about preventing corruption.
+_index_lock = threading.Lock()
+
+# Serializes every call into the local embedding model. NomicEmbeddings
+# (inference_mode="local") runs on gpt4all's llama.cpp backend, which is not
+# safe to call from two threads at once - observed firsthand: a chat query's
+# embed_query racing an upload's embed_documents crashed the entire process
+# with `GGML_ASSERT: backend_embd != nullptr`, not just raised a Python
+# exception. Every embedding call in this app - indexing or retrieval - goes
+# through _LockedEmbeddings so that's no longer possible regardless of which
+# code path (upload, chat, LangGraph retriever node) triggers it.
+_embedding_lock = threading.Lock()
+
+
+class _LockedEmbeddings(Embeddings):
+    """Wraps an embeddings model so embed calls are serialized process-wide."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def embed_documents(self, texts):
+        with _embedding_lock:
+            return self._inner.embed_documents(texts)
+
+    def embed_query(self, text):
+        with _embedding_lock:
+            return self._inner.embed_query(text)
+
+
+def _get_vectorstore(chroma_db_path: str) -> Chroma:
     """
-    Load an existing FAISS vector database from disk.
+    Get a Chroma vectorstore handle. Cheap to call repeatedly - a fresh
+    PersistentClient pointed at the same path sees whatever the most recent
+    writer persisted, confirmed empirically, so there's no need to cache and
+    invalidate a shared client instance across calls.
 
     Args:
-        faiss_db_path: Path where the FAISS database is stored
+        chroma_db_path: Path where the Chroma database is stored
 
     Returns:
-        Loaded FAISS vectorstore instance
+        Chroma vectorstore instance
     """
-    embedding_model = NomicEmbeddings(model="nomic-embed-text-v1.5", inference_mode="local")
-    return FAISS.load_local(faiss_db_path, embedding_model, allow_dangerous_deserialization=True)
+    embedding_model = _LockedEmbeddings(
+        NomicEmbeddings(model="nomic-embed-text-v1.5", inference_mode="local")
+    )
+    client = chromadb.PersistentClient(path=chroma_db_path)
+    return Chroma(client=client, collection_name=_COLLECTION_NAME, embedding_function=embedding_model)
 
 
-def list_documents(faiss_db_path: str, files_path: str) -> List[dict]:
+def has_documents(chroma_db_path: str) -> bool:
+    """
+    Whether any documents are currently indexed.
+
+    Args:
+        chroma_db_path: Path where the Chroma database is stored
+
+    Returns:
+        True if at least one chunk is indexed
+    """
+    vectorstore = _get_vectorstore(chroma_db_path)
+    result = vectorstore.get(include=[])
+    return len(result["ids"]) > 0
+
+
+def list_documents(chroma_db_path: str, files_path: str) -> List[dict]:
     """
     List indexed documents with their chunk counts and upload dates.
 
     Args:
-        faiss_db_path: Path where the FAISS database is stored
+        chroma_db_path: Path where the Chroma database is stored
         files_path: Path to the folder containing the cached markdown files
 
     Returns:
         List of dicts with 'name', 'chunk_count', and 'uploaded_at' keys
     """
-    if not os.path.exists(faiss_db_path):
-        return []
-
-    vectorstore = _load_vectorstore(faiss_db_path)
+    vectorstore = _get_vectorstore(chroma_db_path)
+    result = vectorstore.get(include=["metadatas"])
 
     chunk_counts: dict = {}
-    for doc in vectorstore.docstore._dict.values():
-        source = doc.metadata.get('file_name', 'Unknown')
+    for metadata in result["metadatas"]:
+        source = metadata.get('file_name', 'Unknown')
         chunk_counts[source] = chunk_counts.get(source, 0) + 1
 
     documents = []
@@ -65,138 +121,121 @@ def list_documents(faiss_db_path: str, files_path: str) -> List[dict]:
     return documents
 
 
-def delete_document(name: str, faiss_db_path: str, files_path: str) -> bool:
+def delete_document(name: str, chroma_db_path: str, files_path: str) -> bool:
     """
-    Delete a single document's chunks from the FAISS index without rebuilding
-    the rest of the index, and remove its cached markdown file.
+    Delete a single document's chunks from the Chroma collection and remove
+    its cached markdown file. Unlike FAISS, an empty collection is a valid
+    persisted state, so there's no special-case cleanup needed when the last
+    document is removed.
 
     Args:
         name: Display name of the document (matches what list_documents returns)
-        faiss_db_path: Path where the FAISS database is stored
+        chroma_db_path: Path where the Chroma database is stored
         files_path: Path to the folder containing the cached markdown files
 
     Returns:
         True if the document was found and deleted, False if it wasn't found
     """
-    if not os.path.exists(faiss_db_path):
-        return False
-
     target_path = os.path.join(files_path, f"{name}.md")
-    vectorstore = _load_vectorstore(faiss_db_path)
+    vectorstore = _get_vectorstore(chroma_db_path)
 
-    ids_to_delete = [
-        doc_id for doc_id, doc in vectorstore.docstore._dict.items()
-        if doc.metadata.get('file_name') == target_path
-    ]
+    with _index_lock:
+        existing = vectorstore.get(where={"file_name": target_path}, include=[])
+        ids_to_delete = existing["ids"]
 
-    if not ids_to_delete:
-        return False
+        if not ids_to_delete:
+            return False
 
-    vectorstore.delete(ids_to_delete)
+        vectorstore.delete(ids=ids_to_delete)
 
     if os.path.exists(target_path):
         os.remove(target_path)
 
-    if len(vectorstore.index_to_docstore_id) == 0:
-        # No documents left - remove the index entirely rather than persist an
-        # empty one, so /database/status correctly reports exists=False.
-        shutil.rmtree(faiss_db_path)
-    else:
-        vectorstore.save_local(faiss_db_path)
-
     return True
 
 
-def create_retriever(
-    md_folder_path: str,
-    faiss_db_path: str = "faiss_db",
-    chunk_size: int = 1200,
-    chunk_overlap: int = 200,
-    top_k: int = 3
-):
+def get_retriever(chroma_db_path: str = "chroma_db", top_k: int = 3):
     """
-    Create a document retriever from markdown files.
-
-    This function processes markdown files, splits them into chunks, enhances them with
-    AI-generated summaries, and creates a FAISS vector database for semantic search.
+    Get a retriever over the existing Chroma collection for querying.
 
     Args:
-        md_folder_path: Path to the folder containing markdown files
-        faiss_db_path: Path where the FAISS database will be stored
-        chunk_size: Size of text chunks in characters
-        chunk_overlap: Overlap between chunks in characters
+        chroma_db_path: Path where the Chroma database is stored
         top_k: Number of top documents to retrieve
 
     Returns:
         Configured retriever instance
+
+    Raises:
+        ValueError: if no documents have been indexed yet
     """
-    print(f"\n--- CREATE_RETRIEVER START ---")
+    if not has_documents(chroma_db_path):
+        raise ValueError(f"No documents found at {chroma_db_path}")
+
+    vectorstore = _get_vectorstore(chroma_db_path)
+    return vectorstore.as_retriever(search_kwargs={"k": top_k})
+
+
+def index_documents(
+    md_folder_path: str,
+    chroma_db_path: str = "chroma_db",
+    chunk_size: int = 1200,
+    chunk_overlap: int = 200,
+    progress_callback=None,
+):
+    """
+    Ensure every .md file in md_folder_path is embedded in the Chroma
+    collection, adding only whichever files aren't indexed yet.
+
+    The slow part - chunking and per-chunk AI summarization - runs without
+    holding any lock, so concurrent chat queries (get_retriever) aren't
+    blocked for the whole indexing duration.
+
+    Args:
+        md_folder_path: Path to the folder containing markdown files
+        chroma_db_path: Path where the Chroma database will be stored
+        chunk_size: Size of text chunks in characters
+        chunk_overlap: Overlap between chunks in characters
+        progress_callback: optional callable(current_chunk, total_chunks, file_name)
+            invoked after each chunk is summarized, for progress reporting
+    """
+    print(f"\n--- INDEX_DOCUMENTS START ---")
     print(f"MD folder path: {md_folder_path}")
-    print(f"FAISS DB path: {faiss_db_path}")
-    print(f"Chunk size: {chunk_size}, overlap: {chunk_overlap}, top_k: {top_k}")
+    print(f"Chroma DB path: {chroma_db_path}")
+    print(f"Chunk size: {chunk_size}, overlap: {chunk_overlap}")
 
     md_files = glob.glob(os.path.join(md_folder_path, "*.md"))
     print(f"Found {len(md_files)} markdown files: {[os.path.basename(f) for f in md_files]}")
 
-    if os.path.exists(faiss_db_path):
-        # Load the existing index, then find any .md files on disk that
-        # aren't in it yet (e.g. from a later upload) and add just those -
-        # reloading here would silently ignore new files and only reprocessing
-        # everything would redo (expensive) summarization on unchanged docs.
-        print(f"Loading existing FAISS database from {faiss_db_path}")
-        load_start = time.time()
-        vectorstore = _load_vectorstore(faiss_db_path)
-        load_time = time.time() - load_start
-        print(f"FAISS database loaded in {load_time:.3f}s")
+    if not md_files:
+        raise ValueError(f"No .md files found in {md_folder_path}")
 
-        indexed_sources = {
-            doc.metadata.get('file_name')
-            for doc in vectorstore.docstore._dict.values()
-        }
-        new_files = [f for f in md_files if f not in indexed_sources]
+    vectorstore = _get_vectorstore(chroma_db_path)
 
-        if new_files:
-            print(f"Indexing {len(new_files)} new file(s): {[os.path.basename(f) for f in new_files]}")
-            texts = _process_markdown_files(new_files, chunk_size, chunk_overlap)
-            if texts:
-                vectorstore.add_documents(texts)
-                vectorstore.save_local(faiss_db_path)
-                print(f"Added {len(texts)} chunks from {len(new_files)} new file(s)")
-        else:
-            print("No new files to index")
-    else:
-        if not md_files:
-            raise ValueError(f"No .md files found in {md_folder_path}")
+    with _index_lock:
+        result = vectorstore.get(include=["metadatas"])
+        indexed_sources = {m.get('file_name') for m in result["metadatas"]}
 
-        print("Creating new FAISS database...")
-        create_start = time.time()
+    new_files = [f for f in md_files if f not in indexed_sources]
 
-        embedding_start = time.time()
-        embedding_model = NomicEmbeddings(model="nomic-embed-text-v1.5", inference_mode="local")
-        embedding_init_time = time.time() - embedding_start
-        print(f"Embedding model initialized in {embedding_init_time:.3f}s")
+    if not new_files:
+        print("No new files to index")
+        print(f"--- INDEX_DOCUMENTS END ---\n")
+        return
 
-        texts = _process_markdown_files(md_files, chunk_size, chunk_overlap)
-        if not texts:
-            raise ValueError("No documents were successfully loaded")
+    print(f"Indexing {len(new_files)} new file(s): {[os.path.basename(f) for f in new_files]}")
+    texts = _process_markdown_files(new_files, chunk_size, chunk_overlap, progress_callback)
 
-        print("Creating FAISS vector database...")
-        vector_start = time.time()
-        vectorstore = FAISS.from_documents(texts, embedding_model)
-        vectorstore.save_local(faiss_db_path)
-        vector_time = time.time() - vector_start
-        print(f"FAISS database created and saved in {vector_time:.3f}s")
+    if not texts:
+        raise ValueError("No documents were successfully loaded")
 
-        total_create_time = time.time() - create_start
-        print(f"Total database creation time: {total_create_time:.3f}s")
+    with _index_lock:
+        vectorstore.add_documents(texts)
+    print(f"Added {len(texts)} chunks from {len(new_files)} new file(s)")
 
-    retriever = vectorstore.as_retriever(search_kwargs={"k": top_k})
-    print(f"Retriever created with top_k={top_k}")
-    print(f"--- CREATE_RETRIEVER END ---\n")
-    return retriever
+    print(f"--- INDEX_DOCUMENTS END ---\n")
 
 
-def _process_markdown_files(md_files: List[str], chunk_size: int, chunk_overlap: int) -> List:
+def _process_markdown_files(md_files: List[str], chunk_size: int, chunk_overlap: int, progress_callback=None) -> List:
     """
     Load, chunk, and contextually summarize a set of markdown files.
 
@@ -204,6 +243,8 @@ def _process_markdown_files(md_files: List[str], chunk_size: int, chunk_overlap:
         md_files: Paths to the .md files to process
         chunk_size: Size of text chunks in characters
         chunk_overlap: Overlap between chunks in characters
+        progress_callback: optional callable(current_chunk, total_chunks, file_name)
+            invoked after each chunk is summarized
 
     Returns:
         List of chunked, summary-enhanced Document objects ready to embed
@@ -280,6 +321,9 @@ def _process_markdown_files(md_files: List[str], chunk_size: int, chunk_overlap:
         chunk.page_content = f"{summary}\n{chunk.page_content}"
         enhanced_size = len(chunk.page_content)
         print(f"  - Summary generated in {chunk_time:.3f}s (size: {original_size} → {enhanced_size} chars)")
+
+        if progress_callback:
+            progress_callback(i + 1, amount, os.path.basename(chunk.metadata['file_name']))
 
     summary_time = time.time() - summary_start
     print(f"All chunk summaries completed in {summary_time:.3f}s")

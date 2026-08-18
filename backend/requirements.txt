@@ -15,7 +15,8 @@ pandas
 matplotlib
 seaborn
 numpy
-faiss-cpu
+chromadb
+langchain-chroma==0.2.6
 requests
 langchain-ollama
 nomic[local]

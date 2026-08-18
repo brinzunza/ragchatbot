@@ -16,7 +16,7 @@ from datetime import datetime
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'app'))
 
 from pdf_converter import pdf_to_markdown
-from document_processor import create_retriever, list_documents, delete_document
+from document_processor import get_retriever, index_documents, list_documents, delete_document, has_documents
 from qa_workflow import build_graph as build_qa_graph
 
 app = FastAPI(title="AI Assistant API", version="1.0.0")
@@ -31,7 +31,7 @@ app.add_middleware(
 )
 
 # Global variables
-faiss_db_path = "faiss_db"
+chroma_db_path = "chroma_db"
 files_path = "files"
 
 # Upload progress tracking
@@ -81,8 +81,8 @@ def ensure_directories():
     return True
 
 def get_database_status():
-    """Check if FAISS database exists and get file count"""
-    exists = os.path.exists(faiss_db_path)
+    """Check if any documents are indexed and get file count"""
+    exists = has_documents(chroma_db_path)
     file_count = 0
     if os.path.exists(files_path):
         file_count = len([f for f in os.listdir(files_path) if f.endswith('.pdf')])
@@ -120,7 +120,7 @@ def process_documents_background(upload_id: str, file_paths: List[str]):
         conversion_time = time.time() - conversion_start
         print(f"PDF conversion completed in {conversion_time:.3f}s")
 
-        # Stage 2: Build FAISS database
+        # Stage 2: Build vector database
         upload_progress[upload_id] = {
             "status": "indexing",
             "progress": 50,
@@ -130,11 +130,22 @@ def process_documents_background(upload_id: str, file_paths: List[str]):
             "processed_files": total_files
         }
 
-        print("Building FAISS database...")
+        def indexing_progress(current_chunk, total_chunks, file_name):
+            pct = int((current_chunk / total_chunks) * 40) if total_chunks else 0
+            upload_progress[upload_id] = {
+                "status": "indexing",
+                "progress": 50 + pct,
+                "message": f"summarizing chunk {current_chunk}/{total_chunks}",
+                "current_file": file_name,
+                "total_files": total_files,
+                "processed_files": total_files
+            }
+
+        print("Building vector database...")
         db_start = time.time()
-        create_retriever(files_path, faiss_db_path)
+        index_documents(files_path, chroma_db_path, progress_callback=indexing_progress)
         db_time = time.time() - db_start
-        print(f"FAISS database created in {db_time:.3f}s")
+        print(f"Vector database updated in {db_time:.3f}s")
 
         # Stage 3: Cleanup - delete PDF files to save storage
         upload_progress[upload_id] = {
@@ -207,8 +218,8 @@ async def database_status():
 async def reset_database():
     """Reset the database and clear all files"""
     try:
-        if os.path.exists(faiss_db_path):
-            shutil.rmtree(faiss_db_path)
+        if os.path.exists(chroma_db_path):
+            shutil.rmtree(chroma_db_path)
         if os.path.exists(files_path):
             shutil.rmtree(files_path)
         ensure_directories()
@@ -220,7 +231,7 @@ async def reset_database():
 async def get_documents():
     """List indexed documents with chunk counts and upload dates"""
     try:
-        docs = list_documents(faiss_db_path, files_path)
+        docs = list_documents(chroma_db_path, files_path)
         return [DocumentInfo(**doc) for doc in docs]
     except Exception as e:
         traceback.print_exc()
@@ -248,7 +259,7 @@ async def get_document_content(name: str):
 async def remove_document(name: str):
     """Delete a single document from the index"""
     try:
-        deleted = delete_document(name, faiss_db_path, files_path)
+        deleted = delete_document(name, chroma_db_path, files_path)
         if not deleted:
             raise HTTPException(status_code=404, detail=f"document not found: {name}")
         ensure_directories()
@@ -348,8 +359,8 @@ async def qa_chat(message: ChatMessage):
         print(f"Question: {message.content}")
         print(f"Conversation History: {len(message.conversation_history)} messages")
 
-        if not os.path.exists(faiss_db_path):
-            print(f"ERROR: FAISS database not found at {faiss_db_path}")
+        if not has_documents(chroma_db_path):
+            print(f"ERROR: no documents indexed at {chroma_db_path}")
             raise HTTPException(status_code=400, detail="no database found. upload documents first.")
 
         start_time = time.time()
@@ -358,7 +369,7 @@ async def qa_chat(message: ChatMessage):
         # Build QA graph with retriever
         print("Building QA graph and retriever...")
         retriever_start = time.time()
-        retriever = create_retriever(files_path, faiss_db_path)
+        retriever = get_retriever(chroma_db_path, top_k=3)
         app_graph = build_qa_graph(retriever)
         retriever_time = time.time() - retriever_start
         print(f"QA graph built in {retriever_time:.3f}s")
@@ -418,14 +429,14 @@ async def qa_chat_stream(message: ChatMessage):
         print(f"Question: {message.content}")
         print(f"Conversation History: {len(message.conversation_history)} messages")
 
-        if not os.path.exists(faiss_db_path):
-            print(f"ERROR: FAISS database not found at {faiss_db_path}")
+        if not has_documents(chroma_db_path):
+            print(f"ERROR: no documents indexed at {chroma_db_path}")
             raise HTTPException(status_code=400, detail="no database found. upload documents first.")
 
         # Build QA graph with retriever
         print("Building QA graph and retriever for streaming...")
         setup_start = time.time()
-        retriever = create_retriever(files_path, faiss_db_path)
+        retriever = get_retriever(chroma_db_path, top_k=3)
         app_graph = build_qa_graph(retriever)
         setup_time = time.time() - setup_start
         print(f"QA graph built in {setup_time:.3f}s")

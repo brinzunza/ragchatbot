@@ -80,3 +80,17 @@ export const KeyIcon = () => (
     <path d="M6.8 9.2 12.5 3.5M10.5 5.5l1.3 1.3M12.2 3.8l1.3 1.3" />
   </svg>
 );
+
+export const InfoIcon = () => (
+  <svg {...base}>
+    <circle cx="8" cy="8" r="6" />
+    <path d="M8 7.3v4M8 5.2v.1" />
+  </svg>
+);
+
+export const CompassIcon = () => (
+  <svg {...base}>
+    <circle cx="8" cy="8" r="6" />
+    <path d="M10.3 5.7 9 9l-3.3 1.3L7 7l3.3-1.3Z" />
+  </svg>
+);

@@ -10,6 +10,8 @@ import DocumentLibraryModal from './components/DocumentLibraryModal';
 import DocumentViewerModal from './components/DocumentViewerModal';
 import NewChatModal from './components/NewChatModal';
 import ApiKeyModal from './components/ApiKeyModal';
+import InfoPage from './components/InfoPage';
+import SetupPage from './components/SetupPage';
 import { UploadCloudIcon } from './components/Icons';
 
 export const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8000';
@@ -39,6 +41,7 @@ function App() {
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
   const [apiKeyStatus, setApiKeyStatus] = useState(null);
+  const [view, setView] = useState('chat'); // 'chat' | 'info' | 'setup'
 
   const messagesEndRef = useRef(null);
   const uploadIntervalsRef = useRef({});
@@ -128,6 +131,7 @@ function App() {
     setActiveChatId(chatId);
     setShowLibrary(false);
     setViewingSource(null);
+    setView('chat');
     checkStatuses(chatId);
   };
 
@@ -458,6 +462,58 @@ function App() {
 
   const canChat = !!activeChatId && dbStatus.exists;
 
+  const renderChatView = () => (
+    <>
+      <div className="title">Document Q&amp;A</div>
+      <div className="subtitle">Ask questions grounded in your uploaded PDFs</div>
+
+      {!chatsLoaded ? null : !activeChatId ? (
+        <div className="empty-state">
+          <div className="empty-state-icon">
+            <UploadCloudIcon size={22} />
+          </div>
+          <h2>Create your first chat</h2>
+          <p>Each chat has its own set of documents. Start one empty, or copy an existing chat's documents.</p>
+          <button className="nav-item primary-action" onClick={() => setShowNewChatModal(true)}>
+            New chat
+          </button>
+        </div>
+      ) : !canChat && messages.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-state-icon">
+            <UploadCloudIcon size={22} />
+          </div>
+          <h2>Upload documents to begin</h2>
+          <p>Add one or more PDFs and Athena will index them for grounded, cited answers.</p>
+          <UploadDropzone onFiles={handleFileUpload} disabled={loading} />
+          <UploadQueue uploadQueue={uploadQueue} />
+        </div>
+      ) : (
+        <>
+          <UploadDropzone onFiles={handleFileUpload} disabled={loading} compact={canChat} />
+          <UploadQueue uploadQueue={uploadQueue} />
+          <MessageList
+            messages={messages}
+            expandedSources={expandedSources}
+            onToggleSources={toggleSources}
+            onViewSource={setViewingSource}
+            messagesEndRef={messagesEndRef}
+          />
+          <ChatInput
+            input={input}
+            setInput={setInput}
+            onSubmit={handleSubmit}
+            canChat={canChat}
+            loading={loading}
+          />
+          {loading && !messages[messages.length - 1]?.streaming && (
+            <div className="loading">Working...</div>
+          )}
+        </>
+      )}
+    </>
+  );
+
   return (
     <div className="app">
       <div className="container">
@@ -472,6 +528,9 @@ function App() {
           onOpenLibrary={() => setShowLibrary(true)}
           onOpenApiKey={() => setShowApiKeyModal(true)}
           apiKeyStatus={apiKeyStatus}
+          view={view}
+          onOpenInfo={() => setView('info')}
+          onOpenSetup={() => setView('setup')}
           loading={loading}
           dbStatus={dbStatus}
         />
@@ -510,52 +569,16 @@ function App() {
         )}
 
         <div className="main">
-          <div className="title">Document Q&amp;A</div>
-          <div className="subtitle">Ask questions grounded in your uploaded PDFs</div>
-
-          {!chatsLoaded ? null : !activeChatId ? (
-            <div className="empty-state">
-              <div className="empty-state-icon">
-                <UploadCloudIcon size={22} />
-              </div>
-              <h2>Create your first chat</h2>
-              <p>Each chat has its own set of documents. Start one empty, or copy an existing chat's documents.</p>
-              <button className="nav-item primary-action" onClick={() => setShowNewChatModal(true)}>
-                New chat
-              </button>
-            </div>
-          ) : !canChat && messages.length === 0 ? (
-            <div className="empty-state">
-              <div className="empty-state-icon">
-                <UploadCloudIcon size={22} />
-              </div>
-              <h2>Upload documents to begin</h2>
-              <p>Add one or more PDFs and Athena will index them for grounded, cited answers.</p>
-              <UploadDropzone onFiles={handleFileUpload} disabled={loading} />
-              <UploadQueue uploadQueue={uploadQueue} />
-            </div>
+          {view === 'info' ? (
+            <InfoPage />
+          ) : view === 'setup' ? (
+            <SetupPage
+              apiKeyStatus={apiKeyStatus}
+              onOpenApiKey={() => setShowApiKeyModal(true)}
+              onNewChat={() => setShowNewChatModal(true)}
+            />
           ) : (
-            <>
-              <UploadDropzone onFiles={handleFileUpload} disabled={loading} compact={canChat} />
-              <UploadQueue uploadQueue={uploadQueue} />
-              <MessageList
-                messages={messages}
-                expandedSources={expandedSources}
-                onToggleSources={toggleSources}
-                onViewSource={setViewingSource}
-                messagesEndRef={messagesEndRef}
-              />
-              <ChatInput
-                input={input}
-                setInput={setInput}
-                onSubmit={handleSubmit}
-                canChat={canChat}
-                loading={loading}
-              />
-              {loading && !messages[messages.length - 1]?.streaming && (
-                <div className="loading">Working...</div>
-              )}
-            </>
+            renderChatView()
           )}
         </div>
       </div>

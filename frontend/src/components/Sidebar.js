@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { TrashIcon, RefreshIcon, FileTextIcon, PlusIcon, MessageIcon, KeyIcon } from './Icons';
+import { TrashIcon, RefreshIcon, FileTextIcon, PlusIcon, MessageIcon, KeyIcon, InfoIcon, CompassIcon } from './Icons';
 
 function Sidebar({
   chats,
@@ -12,6 +12,9 @@ function Sidebar({
   onOpenLibrary,
   onOpenApiKey,
   apiKeyStatus,
+  view,
+  onOpenInfo,
+  onOpenSetup,
   loading,
   dbStatus
 }) {
@@ -102,6 +105,18 @@ function Sidebar({
       )}
 
       <div className="sidebar-section sidebar-section-settings">
+        <div className="sidebar-label">Help</div>
+        <button onClick={onOpenInfo} className={`nav-item ${view === 'info' ? 'active' : ''}`}>
+          <InfoIcon />
+          How it works
+        </button>
+        <button onClick={onOpenSetup} className={`nav-item ${view === 'setup' ? 'active' : ''}`}>
+          <CompassIcon />
+          Setup guide
+        </button>
+      </div>
+
+      <div className="sidebar-section">
         <div className="sidebar-label">Settings</div>
         <button onClick={onOpenApiKey} className="nav-item">
           <KeyIcon />

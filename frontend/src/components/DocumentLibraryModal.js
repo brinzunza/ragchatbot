@@ -10,7 +10,7 @@ function formatDate(iso) {
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-function DocumentLibraryModal({ onClose, onDocumentDeleted }) {
+function DocumentLibraryModal({ chatId, onClose, onDocumentDeleted }) {
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -20,7 +20,8 @@ function DocumentLibraryModal({ onClose, onDocumentDeleted }) {
 
   useEffect(() => {
     fetchDocuments();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId]);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -34,7 +35,7 @@ function DocumentLibraryModal({ onClose, onDocumentDeleted }) {
     setLoading(true);
     setError(null);
     try {
-      const response = await axios.get(`${API_BASE}/documents`);
+      const response = await axios.get(`${API_BASE}/chats/${chatId}/documents`);
       setDocuments(response.data);
     } catch (err) {
       setError('Failed to load documents');
@@ -45,7 +46,7 @@ function DocumentLibraryModal({ onClose, onDocumentDeleted }) {
   const handleDelete = async (name) => {
     setDeletingName(name);
     try {
-      await axios.delete(`${API_BASE}/documents/${encodeURIComponent(name)}`);
+      await axios.delete(`${API_BASE}/chats/${chatId}/documents/${encodeURIComponent(name)}`);
       setDocuments((prev) => prev.filter((doc) => doc.name !== name));
       onDocumentDeleted();
     } catch (err) {

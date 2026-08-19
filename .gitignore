@@ -4,6 +4,7 @@ backend_env/
 files/
 chroma_db/
 faiss_db/
+backend/chats/
 
 # Python cache
 __pycache__/

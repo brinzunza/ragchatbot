@@ -9,11 +9,67 @@ This allows the system to work seamlessly with both cloud and local LLMs.
 """
 
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 from langchain_core.language_models.chat_models import BaseChatModel
 
 # Load environment variables from .env file
 load_dotenv()
+
+_ENV_KEY = "OPENAI_API_KEY"
+
+
+def _env_file_path() -> str:
+    """Path to the .env file, creating one alongside it if none exists yet."""
+    path = find_dotenv(usecwd=True)
+    return path or os.path.join(os.path.dirname(__file__), "..", ".env")
+
+
+def get_masked_api_key() -> str | None:
+    """Return the current OpenAI key masked for display, or None if unset."""
+    key = os.getenv(_ENV_KEY)
+    if not key:
+        return None
+    if len(key) <= 8:
+        return "*" * len(key)
+    return f"{key[:4]}{'*' * (len(key) - 8)}{key[-4:]}"
+
+
+def set_api_key(api_key: str) -> None:
+    """Persist a new OpenAI key to .env and apply it immediately."""
+    path = _env_file_path()
+    lines = []
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+    replaced = False
+    for i, line in enumerate(lines):
+        if line.strip().startswith(f"{_ENV_KEY}="):
+            lines[i] = f"{_ENV_KEY}={api_key}\n"
+            replaced = True
+            break
+    if not replaced:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append(f"{_ENV_KEY}={api_key}\n")
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+    os.environ[_ENV_KEY] = api_key
+
+
+def clear_api_key() -> None:
+    """Remove the OpenAI key from .env and fall back to Ollama immediately."""
+    path = _env_file_path()
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        lines = [line for line in lines if not line.strip().startswith(f"{_ENV_KEY}=")]
+        with open(path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+    os.environ.pop(_ENV_KEY, None)
 
 
 def get_llm(temperature: float = 0, streaming: bool = True, **kwargs) -> BaseChatModel:

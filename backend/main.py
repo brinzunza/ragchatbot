@@ -10,7 +10,6 @@ import json
 import traceback
 import sys
 import uuid
-from datetime import datetime
 
 # Add the app directory to the path to import existing modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'app'))
@@ -18,6 +17,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'app'))
 from pdf_converter import pdf_to_markdown
 from document_processor import get_retriever, index_documents, list_documents, delete_document, has_documents
 from qa_workflow import build_graph as build_qa_graph
+import chat_manager
+import llm_config
 
 app = FastAPI(title="AI Assistant API", version="1.0.0")
 
@@ -30,11 +31,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global variables
-chroma_db_path = "chroma_db"
-files_path = "files"
-
-# Upload progress tracking
+# Upload progress tracking - upload_id is globally unique (uuid4), so this
+# doesn't need to be scoped by chat_id to work correctly. Each entry also
+# records which chat it belongs to, so create_chat() can refuse to clone a
+# chat that's mid-upload.
 upload_progress: Dict[str, Dict] = {}
 
 # Pydantic models for request/response
@@ -73,36 +73,61 @@ class DocumentInfo(BaseModel):
     chunk_count: int
     uploaded_at: str
 
+class ChatInfo(BaseModel):
+    id: str
+    name: str
+    created_at: str
+    document_count: int
+
+class CreateChatRequest(BaseModel):
+    name: str
+    copy_from: Optional[str] = None
+
+class ApiKeyStatus(BaseModel):
+    has_key: bool
+    masked_key: Optional[str] = None
+    provider: str
+    model: str
+
+class SetApiKeyRequest(BaseModel):
+    api_key: str
+
 
 # Helper functions
-def ensure_directories():
-    """Ensure required directories exist"""
-    os.makedirs(files_path, exist_ok=True)
-    return True
-
-def get_database_status():
+def get_database_status(chroma_db_path: str, files_path: str):
     """Check if any documents are indexed and get file count"""
     exists = has_documents(chroma_db_path)
-    file_count = 0
-    if os.path.exists(files_path):
-        file_count = len([f for f in os.listdir(files_path) if f.endswith('.pdf')])
+    file_count = len(list_documents(chroma_db_path, files_path)) if exists else 0
     return DatabaseStatus(exists=exists, file_count=file_count)
 
-def process_documents_background(upload_id: str, file_paths: List[str]):
+def in_progress_upload_chat_ids():
+    """Chat ids with an upload currently converting/indexing/uploading"""
+    return {
+        v["chat_id"] for v in upload_progress.values()
+        if v.get("chat_id") and v["status"] not in ("completed", "error")
+    }
+
+def resolve_chat_paths(chat_id: str):
+    """get_chat_paths, translating a missing chat into a 404"""
+    try:
+        return chat_manager.get_chat_paths(chat_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"chat not found: {chat_id}")
+
+def process_documents_background(upload_id: str, file_paths: List[str], chroma_db_path: str, files_path: str):
     """Background task to process uploaded documents"""
     try:
         total_files = len(file_paths)
         print(f"\n=== BACKGROUND PROCESSING START (ID: {upload_id}) ===")
 
         # Stage 1: Convert PDFs to markdown
-        upload_progress[upload_id] = {
+        upload_progress[upload_id].update({
             "status": "converting",
             "progress": 10,
             "message": "converting PDFs to markdown",
             "current_file": None,
-            "total_files": total_files,
             "processed_files": 0
-        }
+        })
 
         print("Converting PDFs to markdown...")
         conversion_start = time.time()
@@ -114,32 +139,30 @@ def process_documents_background(upload_id: str, file_paths: List[str]):
             upload_progress[upload_id]["processed_files"] = i
             upload_progress[upload_id]["progress"] = 10 + int((i / total_files) * 40)
 
-            pdf_to_markdown(pdf_path)
+            pdf_to_markdown(pdf_path, output_dir=files_path)
             print(f"  - Converted: {filename}")
 
         conversion_time = time.time() - conversion_start
         print(f"PDF conversion completed in {conversion_time:.3f}s")
 
         # Stage 2: Build vector database
-        upload_progress[upload_id] = {
+        upload_progress[upload_id].update({
             "status": "indexing",
             "progress": 50,
             "message": "building vector database",
             "current_file": None,
-            "total_files": total_files,
             "processed_files": total_files
-        }
+        })
 
         def indexing_progress(current_chunk, total_chunks, file_name):
             pct = int((current_chunk / total_chunks) * 40) if total_chunks else 0
-            upload_progress[upload_id] = {
+            upload_progress[upload_id].update({
                 "status": "indexing",
                 "progress": 50 + pct,
                 "message": f"summarizing chunk {current_chunk}/{total_chunks}",
                 "current_file": file_name,
-                "total_files": total_files,
                 "processed_files": total_files
-            }
+            })
 
         print("Building vector database...")
         db_start = time.time()
@@ -148,14 +171,13 @@ def process_documents_background(upload_id: str, file_paths: List[str]):
         print(f"Vector database updated in {db_time:.3f}s")
 
         # Stage 3: Cleanup - delete PDF files to save storage
-        upload_progress[upload_id] = {
+        upload_progress[upload_id].update({
             "status": "cleanup",
             "progress": 90,
             "message": "cleaning up temporary files",
             "current_file": None,
-            "total_files": total_files,
             "processed_files": total_files
-        }
+        })
 
         print("Cleaning up PDF files...")
         cleanup_start = time.time()
@@ -174,28 +196,26 @@ def process_documents_background(upload_id: str, file_paths: List[str]):
         print(f"Cleanup completed in {cleanup_time:.3f}s ({deleted_count}/{total_files} files deleted)")
 
         # Complete
-        upload_progress[upload_id] = {
+        upload_progress[upload_id].update({
             "status": "completed",
             "progress": 100,
             "message": f"successfully processed {total_files} files",
             "current_file": None,
-            "total_files": total_files,
             "processed_files": total_files
-        }
+        })
 
         print(f"=== BACKGROUND PROCESSING COMPLETE (ID: {upload_id}) ===\n")
 
     except Exception as e:
         print(f"ERROR in background processing: {str(e)}")
         traceback.print_exc()
-        upload_progress[upload_id] = {
+        upload_progress[upload_id].update({
             "status": "error",
             "progress": 0,
             "message": f"processing failed: {str(e)}",
             "current_file": None,
-            "total_files": total_files,
             "processed_files": 0
-        }
+        })
 
 
 # API Routes
@@ -208,28 +228,110 @@ async def root():
 async def health_check():
     return {"status": "healthy"}
 
-@app.get("/database/status")
-async def database_status():
-    """Get the current database status"""
-    return get_database_status()
+
+# --- Settings (global, shared across all chats) ---
+
+@app.get("/settings/api-key")
+async def get_api_key_status():
+    """Report whether an OpenAI key is set and which provider is active"""
+    info = llm_config.get_model_info()
+    masked = llm_config.get_masked_api_key()
+    return ApiKeyStatus(has_key=masked is not None, masked_key=masked, **info)
+
+@app.post("/settings/api-key")
+async def set_api_key(request: SetApiKeyRequest):
+    """Set (or replace) the OpenAI API key, applied immediately without a restart"""
+    key = request.api_key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="api_key cannot be empty")
+    try:
+        llm_config.set_api_key(key)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"failed to save api key: {str(e)}")
+    info = llm_config.get_model_info()
+    return ApiKeyStatus(has_key=True, masked_key=llm_config.get_masked_api_key(), **info)
+
+@app.delete("/settings/api-key")
+async def remove_api_key():
+    """Remove the OpenAI key, falling back to local Ollama immediately"""
+    try:
+        llm_config.clear_api_key()
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"failed to remove api key: {str(e)}")
+    info = llm_config.get_model_info()
+    return ApiKeyStatus(has_key=False, masked_key=None, **info)
 
 
-@app.post("/database/reset")
-async def reset_database():
-    """Reset the database and clear all files"""
+# --- Chat management ---
+
+@app.get("/chats")
+async def get_chats():
+    """List all chats with their document counts"""
+    try:
+        return [ChatInfo(**c) for c in chat_manager.list_chats()]
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"failed to list chats: {str(e)}")
+
+@app.post("/chats")
+async def create_chat(request: CreateChatRequest):
+    """Create a new chat, empty or cloned from an existing one's documents"""
+    try:
+        chat = chat_manager.create_chat(
+            request.name,
+            copy_from=request.copy_from,
+            in_progress_upload_chat_ids=in_progress_upload_chat_ids()
+        )
+        return ChatInfo(**chat)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"failed to create chat: {str(e)}")
+
+@app.delete("/chats/{chat_id}")
+async def remove_chat(chat_id: str):
+    """Delete a chat and all its documents"""
+    try:
+        deleted = chat_manager.delete_chat(chat_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"chat not found: {chat_id}")
+        return StatusResponse(status="success", message=f"deleted chat {chat_id}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"failed to delete chat: {str(e)}")
+
+
+# --- Per-chat document database ---
+
+@app.get("/chats/{chat_id}/database/status")
+async def database_status(chat_id: str):
+    """Get the current database status for a chat"""
+    chroma_db_path, files_path = resolve_chat_paths(chat_id)
+    return get_database_status(chroma_db_path, files_path)
+
+@app.post("/chats/{chat_id}/database/reset")
+async def reset_database(chat_id: str):
+    """Wipe a chat's documents, keeping the chat itself"""
+    chroma_db_path, files_path = resolve_chat_paths(chat_id)
     try:
         if os.path.exists(chroma_db_path):
             shutil.rmtree(chroma_db_path)
         if os.path.exists(files_path):
             shutil.rmtree(files_path)
-        ensure_directories()
+        os.makedirs(files_path, exist_ok=True)
         return StatusResponse(status="success", message="database reset successfully")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"failed to reset database: {str(e)}")
 
-@app.get("/documents")
-async def get_documents():
+@app.get("/chats/{chat_id}/documents")
+async def get_documents(chat_id: str):
     """List indexed documents with chunk counts and upload dates"""
+    chroma_db_path, files_path = resolve_chat_paths(chat_id)
     try:
         docs = list_documents(chroma_db_path, files_path)
         return [DocumentInfo(**doc) for doc in docs]
@@ -237,11 +339,12 @@ async def get_documents():
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"failed to list documents: {str(e)}")
 
-@app.get("/documents/{name}/content")
-async def get_document_content(name: str):
+@app.get("/chats/{chat_id}/documents/{name}/content")
+async def get_document_content(chat_id: str, name: str):
     """Get the raw markdown content of a document, for citation highlighting"""
     if "/" in name or "\\" in name or ".." in name:
         raise HTTPException(status_code=400, detail="invalid document name")
+    _, files_path = resolve_chat_paths(chat_id)
     try:
         path = os.path.join(files_path, f"{name}.md")
         if not os.path.exists(path):
@@ -255,14 +358,15 @@ async def get_document_content(name: str):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"failed to read document: {str(e)}")
 
-@app.delete("/documents/{name}")
-async def remove_document(name: str):
+@app.delete("/chats/{chat_id}/documents/{name}")
+async def remove_document(chat_id: str, name: str):
     """Delete a single document from the index"""
+    chroma_db_path, files_path = resolve_chat_paths(chat_id)
     try:
         deleted = delete_document(name, chroma_db_path, files_path)
         if not deleted:
             raise HTTPException(status_code=404, detail=f"document not found: {name}")
-        ensure_directories()
+        os.makedirs(files_path, exist_ok=True)
         return StatusResponse(status="success", message=f"deleted {name}")
     except HTTPException:
         raise
@@ -270,15 +374,16 @@ async def remove_document(name: str):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"failed to delete document: {str(e)}")
 
-@app.post("/documents/upload")
-async def upload_documents(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)):
-    """Upload PDF documents and process in background"""
+@app.post("/chats/{chat_id}/documents/upload")
+async def upload_documents(chat_id: str, background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)):
+    """Upload PDF documents to a chat and process in background"""
+    chroma_db_path, files_path = resolve_chat_paths(chat_id)
     try:
         print(f"\n=== DOCUMENT UPLOAD START ===")
         print(f"Number of files received: {len(files)}")
 
         upload_start = time.time()
-        ensure_directories()
+        os.makedirs(files_path, exist_ok=True)
 
         # Generate upload ID
         upload_id = str(uuid.uuid4())
@@ -286,6 +391,7 @@ async def upload_documents(background_tasks: BackgroundTasks, files: List[Upload
 
         # Initialize progress tracking
         upload_progress[upload_id] = {
+            "chat_id": chat_id,
             "status": "uploading",
             "progress": 0,
             "message": "receiving files",
@@ -321,7 +427,7 @@ async def upload_documents(background_tasks: BackgroundTasks, files: List[Upload
         print(f"Starting background processing for {len(uploaded_files)} files")
 
         # Start background processing
-        background_tasks.add_task(process_documents_background, upload_id, uploaded_files)
+        background_tasks.add_task(process_documents_background, upload_id, uploaded_files, chroma_db_path, files_path)
 
         return UploadResponse(
             upload_id=upload_id,
@@ -329,6 +435,8 @@ async def upload_documents(background_tasks: BackgroundTasks, files: List[Upload
             message=f"received {len(uploaded_files)} files, processing in background"
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"ERROR in upload_documents: {str(e)}")
         traceback.print_exc()
@@ -351,9 +459,10 @@ async def get_upload_status(upload_id: str):
         processed_files=progress_data["processed_files"]
     )
 
-@app.post("/qa/chat")
-async def qa_chat(message: ChatMessage):
+@app.post("/chats/{chat_id}/qa/chat")
+async def qa_chat(chat_id: str, message: ChatMessage):
     """Process Q&A chat message"""
+    chroma_db_path, _ = resolve_chat_paths(chat_id)
     try:
         print(f"\n=== QA CHAT REQUEST START ===")
         print(f"Question: {message.content}")
@@ -416,14 +525,17 @@ async def qa_chat(message: ChatMessage):
             response_time=response_time
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"ERROR in qa_chat: {str(e)}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"chat processing failed: {str(e)}")
 
-@app.post("/qa/chat/stream")
-async def qa_chat_stream(message: ChatMessage):
+@app.post("/chats/{chat_id}/qa/chat/stream")
+async def qa_chat_stream(chat_id: str, message: ChatMessage):
     """Process Q&A chat message with streaming response"""
+    chroma_db_path, _ = resolve_chat_paths(chat_id)
     try:
         print(f"\n=== STREAMING CHAT REQUEST START ===")
         print(f"Question: {message.content}")
@@ -522,6 +634,8 @@ async def qa_chat_stream(message: ChatMessage):
             }
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"streaming chat failed: {str(e)}")
@@ -529,5 +643,5 @@ async def qa_chat_stream(message: ChatMessage):
 
 if __name__ == "__main__":
     import uvicorn
-    ensure_directories()
+    os.makedirs(chat_manager.CHATS_ROOT, exist_ok=True)
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

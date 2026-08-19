@@ -8,28 +8,100 @@ import MessageList from './components/MessageList';
 import ChatInput from './components/ChatInput';
 import DocumentLibraryModal from './components/DocumentLibraryModal';
 import DocumentViewerModal from './components/DocumentViewerModal';
+import NewChatModal from './components/NewChatModal';
+import ApiKeyModal from './components/ApiKeyModal';
 import { UploadCloudIcon } from './components/Icons';
 
 export const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8000';
 
+const EMPTY_DB_STATUS = { exists: false, file_count: 0 };
+const EMPTY_MESSAGES = [];
+const EMPTY_UPLOAD_QUEUE = [];
+const EMPTY_EXPANDED_SOURCES = {};
+
 function App() {
-  const [messages, setMessages] = useState([]);
+  const [chats, setChats] = useState([]);
+  const [activeChatId, setActiveChatId] = useState(null);
+  const [chatsLoaded, setChatsLoaded] = useState(false);
+
+  // Keyed by chat id, so an in-progress upload or streaming response in one
+  // chat keeps updating correctly even if the user switches to another chat
+  // before it finishes.
+  const [messagesByChat, setMessagesByChat] = useState({});
+  const [uploadQueueByChat, setUploadQueueByChat] = useState({});
+  const [loadingByChat, setLoadingByChat] = useState({});
+  const [dbStatusByChat, setDbStatusByChat] = useState({});
+  const [expandedSourcesByChat, setExpandedSourcesByChat] = useState({});
+
   const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [dbStatus, setDbStatus] = useState({ exists: false, file_count: 0 });
-  const [uploadQueue, setUploadQueue] = useState([]);
-  const [expandedSources, setExpandedSources] = useState({});
   const [showLibrary, setShowLibrary] = useState(false);
   const [viewingSource, setViewingSource] = useState(null);
+  const [showNewChatModal, setShowNewChatModal] = useState(false);
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [apiKeyStatus, setApiKeyStatus] = useState(null);
+
   const messagesEndRef = useRef(null);
   const uploadIntervalsRef = useRef({});
 
-  // Check database and data status on mount
+  const messages = messagesByChat[activeChatId] || EMPTY_MESSAGES;
+  const uploadQueue = uploadQueueByChat[activeChatId] || EMPTY_UPLOAD_QUEUE;
+  const loading = loadingByChat[activeChatId] || false;
+  const dbStatus = dbStatusByChat[activeChatId] || EMPTY_DB_STATUS;
+  const expandedSources = expandedSourcesByChat[activeChatId] || EMPTY_EXPANDED_SOURCES;
+
+  const updateMessages = (chatId, updater) => {
+    setMessagesByChat(prev => ({
+      ...prev,
+      [chatId]: typeof updater === 'function' ? updater(prev[chatId] || []) : updater
+    }));
+  };
+
+  const updateUploadQueue = (chatId, updater) => {
+    setUploadQueueByChat(prev => ({
+      ...prev,
+      [chatId]: typeof updater === 'function' ? updater(prev[chatId] || []) : updater
+    }));
+  };
+
+  const setChatLoading = (chatId, value) => {
+    setLoadingByChat(prev => ({ ...prev, [chatId]: value }));
+  };
+
+  const refreshChats = async () => {
+    try {
+      const response = await axios.get(`${API_BASE}/chats`);
+      setChats(response.data);
+      return response.data;
+    } catch (error) {
+      console.error('failed to load chats:', error);
+      return null;
+    }
+  };
+
+  const refreshApiKeyStatus = async () => {
+    try {
+      const response = await axios.get(`${API_BASE}/settings/api-key`);
+      setApiKeyStatus(response.data);
+    } catch (error) {
+      console.error('failed to load api key status:', error);
+    }
+  };
+
+  // Load the chat list on mount, and open the first chat if any exist
   useEffect(() => {
-    checkStatuses();
+    (async () => {
+      const fetched = await refreshChats();
+      if (fetched && fetched.length > 0) {
+        setActiveChatId(fetched[0].id);
+        checkStatuses(fetched[0].id);
+      }
+      setChatsLoaded(true);
+    })();
+    refreshApiKeyStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Scroll to bottom when messages change
+  // Scroll to bottom when the active chat's messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -43,22 +115,63 @@ function App() {
     };
   }, []);
 
-  const checkStatuses = async () => {
+  const checkStatuses = async (chatId) => {
     try {
-      const dbResponse = await axios.get(`${API_BASE}/database/status`);
-      setDbStatus(dbResponse.data);
+      const dbResponse = await axios.get(`${API_BASE}/chats/${chatId}/database/status`);
+      setDbStatusByChat(prev => ({ ...prev, [chatId]: dbResponse.data }));
     } catch (error) {
       console.error('failed to check statuses:', error);
     }
   };
 
-  const pollUploadStatus = async (uploadId) => {
+  const switchChat = (chatId) => {
+    setActiveChatId(chatId);
+    setShowLibrary(false);
+    setViewingSource(null);
+    checkStatuses(chatId);
+  };
+
+  const handleCreateChat = async (name, copyFrom) => {
+    const response = await axios.post(`${API_BASE}/chats`, { name, copy_from: copyFrom || null });
+    const newChat = response.data;
+    setChats(prev => [...prev, newChat]);
+    switchChat(newChat.id);
+    setShowNewChatModal(false);
+  };
+
+  const handleDeleteChat = async (chatId) => {
+    const remaining = chats.filter(c => c.id !== chatId);
+    try {
+      await axios.delete(`${API_BASE}/chats/${chatId}`);
+    } catch (error) {
+      console.error('failed to delete chat:', error);
+      return;
+    }
+
+    setChats(remaining);
+    [setMessagesByChat, setUploadQueueByChat, setLoadingByChat, setDbStatusByChat, setExpandedSourcesByChat].forEach(setter => {
+      setter(prev => {
+        const next = { ...prev };
+        delete next[chatId];
+        return next;
+      });
+    });
+
+    if (activeChatId === chatId) {
+      if (remaining.length > 0) {
+        switchChat(remaining[0].id);
+      } else {
+        setActiveChatId(null);
+      }
+    }
+  };
+
+  const pollUploadStatus = async (chatId, uploadId) => {
     try {
       const response = await axios.get(`${API_BASE}/documents/upload/status/${uploadId}`);
       const status = response.data;
 
-      // Update the specific upload in the queue
-      setUploadQueue(prev => prev.map(upload =>
+      updateUploadQueue(chatId, prev => prev.map(upload =>
         upload.uploadId === uploadId
           ? {
               ...upload,
@@ -72,35 +185,33 @@ function App() {
           : upload
       ));
 
-      // If completed or error, stop polling and remove from queue after delay
       if (status.status === 'completed') {
         if (uploadIntervalsRef.current[uploadId]) {
           clearInterval(uploadIntervalsRef.current[uploadId]);
           delete uploadIntervalsRef.current[uploadId];
         }
-        setMessages(prev => [...prev, {
+        updateMessages(chatId, prev => [...prev, {
           role: 'system',
           content: `Successfully processed ${status.total_files} document${status.total_files === 1 ? '' : 's'}`
         }]);
-        checkStatuses();
+        checkStatuses(chatId);
+        refreshChats();
 
-        // Remove from queue after 3 seconds
         setTimeout(() => {
-          setUploadQueue(prev => prev.filter(u => u.uploadId !== uploadId));
+          updateUploadQueue(chatId, prev => prev.filter(u => u.uploadId !== uploadId));
         }, 3000);
       } else if (status.status === 'error') {
         if (uploadIntervalsRef.current[uploadId]) {
           clearInterval(uploadIntervalsRef.current[uploadId]);
           delete uploadIntervalsRef.current[uploadId];
         }
-        setMessages(prev => [...prev, {
+        updateMessages(chatId, prev => [...prev, {
           role: 'system',
           content: `Upload failed: ${status.message}`
         }]);
 
-        // Remove from queue after 5 seconds
         setTimeout(() => {
-          setUploadQueue(prev => prev.filter(u => u.uploadId !== uploadId));
+          updateUploadQueue(chatId, prev => prev.filter(u => u.uploadId !== uploadId));
         }, 5000);
       }
     } catch (error) {
@@ -109,22 +220,20 @@ function App() {
         clearInterval(uploadIntervalsRef.current[uploadId]);
         delete uploadIntervalsRef.current[uploadId];
       }
-      // Remove failed upload from queue
       setTimeout(() => {
-        setUploadQueue(prev => prev.filter(u => u.uploadId !== uploadId));
+        updateUploadQueue(chatId, prev => prev.filter(u => u.uploadId !== uploadId));
       }, 3000);
     }
   };
 
   const handleFileUpload = async (files) => {
-    if (!files || files.length === 0) return;
+    const chatId = activeChatId;
+    if (!chatId || !files || files.length === 0) return;
 
-    // Generate a temporary ID for this upload
     const tempId = `temp-${Date.now()}`;
     const fileNames = Array.from(files).map(f => f.name).join(', ');
 
-    // Add upload to queue immediately
-    setUploadQueue(prev => [...prev, {
+    updateUploadQueue(chatId, prev => [...prev, {
       uploadId: tempId,
       progress: 0,
       status: 'uploading',
@@ -141,45 +250,33 @@ function App() {
         formData.append('files', file);
       });
 
-      // Upload with progress tracking
-      const response = await axios.post(`${API_BASE}/documents/upload`, formData, {
+      const response = await axios.post(`${API_BASE}/chats/${chatId}/documents/upload`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
         onUploadProgress: (progressEvent) => {
           const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-          setUploadQueue(prev => prev.map(upload =>
+          updateUploadQueue(chatId, prev => prev.map(upload =>
             upload.uploadId === tempId
-              ? {
-                  ...upload,
-                  progress: Math.min(percentCompleted, 10),
-                  message: 'Uploading files...'
-                }
+              ? { ...upload, progress: Math.min(percentCompleted, 10), message: 'Uploading files...' }
               : upload
           ));
         }
       });
 
-      // Get the real upload ID from backend
       const uploadId = response.data.upload_id;
 
-      // Update the queue with the real upload ID
-      setUploadQueue(prev => prev.map(upload =>
-        upload.uploadId === tempId
-          ? { ...upload, uploadId: uploadId }
-          : upload
+      updateUploadQueue(chatId, prev => prev.map(upload =>
+        upload.uploadId === tempId ? { ...upload, uploadId: uploadId } : upload
       ));
 
-      // Start polling for background processing status
       uploadIntervalsRef.current[uploadId] = setInterval(() => {
-        pollUploadStatus(uploadId);
-      }, 500); // Poll every 500ms
+        pollUploadStatus(chatId, uploadId);
+      }, 500);
 
-      // Immediately poll once
-      pollUploadStatus(uploadId);
+      pollUploadStatus(chatId, uploadId);
 
     } catch (error) {
-      // Remove from queue on error
-      setUploadQueue(prev => prev.filter(u => u.uploadId !== tempId));
-      setMessages(prev => [...prev, {
+      updateUploadQueue(chatId, prev => prev.filter(u => u.uploadId !== tempId));
+      updateMessages(chatId, prev => [...prev, {
         role: 'system',
         content: `Upload failed: ${error.response?.data?.detail || error.message}`
       }]);
@@ -188,13 +285,16 @@ function App() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!input.trim() || loading) return;
+    const chatId = activeChatId;
+    if (!chatId || !input.trim() || loadingByChat[chatId]) return;
 
-    const userMessage = { role: 'user', content: input };
-    setMessages(prev => [...prev, userMessage]);
-    setLoading(true);
+    const priorMessages = messagesByChat[chatId] || [];
+    const currentInput = input;
 
-    // Add a placeholder assistant message for streaming
+    const userMessage = { role: 'user', content: currentInput };
+    updateMessages(chatId, prev => [...prev, userMessage]);
+    setChatLoading(chatId, true);
+
     const assistantMessage = {
       role: 'assistant',
       content: '',
@@ -202,10 +302,10 @@ function App() {
       response_time: null,
       streaming: true
     };
-    setMessages(prev => [...prev, assistantMessage]);
+    updateMessages(chatId, prev => [...prev, assistantMessage]);
 
     try {
-      const conversationHistory = messages
+      const conversationHistory = priorMessages
         .filter(msg => msg.role !== 'system')
         .slice(-6) // Last 3 Q&A pairs
         .reduce((acc, msg, index, arr) => {
@@ -215,14 +315,13 @@ function App() {
           return acc;
         }, []);
 
-      // Use fetch for Server-Sent Events streaming
-      const response = await fetch(`${API_BASE}/qa/chat/stream`, {
+      const response = await fetch(`${API_BASE}/chats/${chatId}/qa/chat/stream`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          content: input,
+          content: currentInput,
           conversation_history: conversationHistory
         })
       });
@@ -253,8 +352,7 @@ function App() {
               if (data.type === 'chunk' && data.content) {
                 accumulatedContent += data.content;
 
-                // Update the streaming message with accumulated content
-                setMessages(prev => {
+                updateMessages(chatId, prev => {
                   const newMessages = [...prev];
                   const lastMessage = newMessages[newMessages.length - 1];
                   if (lastMessage.role === 'assistant' && lastMessage.streaming) {
@@ -266,8 +364,7 @@ function App() {
                   return newMessages;
                 });
               } else if (data.type === 'sources' && data.content) {
-                // Store sources separately without adding to content
-                setMessages(prev => {
+                updateMessages(chatId, prev => {
                   const newMessages = [...prev];
                   const lastMessage = newMessages[newMessages.length - 1];
                   if (lastMessage.role === 'assistant' && lastMessage.streaming) {
@@ -279,8 +376,7 @@ function App() {
                   return newMessages;
                 });
               } else if (data.type === 'complete') {
-                // Mark streaming as complete and add response time
-                setMessages(prev => {
+                updateMessages(chatId, prev => {
                   const newMessages = [...prev];
                   const lastMessage = newMessages[newMessages.length - 1];
                   if (lastMessage.role === 'assistant' && lastMessage.streaming) {
@@ -289,7 +385,7 @@ function App() {
                       streaming: false,
                       response_time: data.response_time,
                       content: accumulatedContent,
-                      sources: lastMessage.sources // Explicitly preserve sources
+                      sources: lastMessage.sources
                     };
                   }
                   return newMessages;
@@ -305,8 +401,7 @@ function App() {
         }
       }
     } catch (error) {
-      // Remove the streaming message and add error message
-      setMessages(prev => {
+      updateMessages(chatId, prev => {
         const newMessages = prev.slice(0, -1);
         return [...newMessages, {
           role: 'assistant',
@@ -315,69 +410,98 @@ function App() {
       });
     }
 
-    setLoading(false);
-    setInput('');
+    setChatLoading(chatId, false);
+    if (chatId === activeChatId) setInput('');
   };
 
   const clearChat = () => {
-    setMessages([]);
+    if (!activeChatId) return;
+    updateMessages(activeChatId, []);
   };
 
   const resetDatabase = async () => {
-    // Stop all upload polling
-    Object.values(uploadIntervalsRef.current).forEach(interval => {
-      clearInterval(interval);
+    const chatId = activeChatId;
+    if (!chatId) return;
+
+    (uploadQueueByChat[chatId] || []).forEach(upload => {
+      if (uploadIntervalsRef.current[upload.uploadId]) {
+        clearInterval(uploadIntervalsRef.current[upload.uploadId]);
+        delete uploadIntervalsRef.current[upload.uploadId];
+      }
     });
-    uploadIntervalsRef.current = {};
+    updateUploadQueue(chatId, []);
 
-    // Clear upload queue
-    setUploadQueue([]);
-
-    setLoading(true);
+    setChatLoading(chatId, true);
     try {
-      await axios.post(`${API_BASE}/database/reset`, {}, {
-        timeout: 10000 // 10 second timeout
+      await axios.post(`${API_BASE}/chats/${chatId}/database/reset`, {}, {
+        timeout: 10000
       });
-      setMessages([{ role: 'system', content: 'Database reset successfully' }]);
-      checkStatuses();
+      updateMessages(chatId, [{ role: 'system', content: 'Database reset successfully' }]);
+      checkStatuses(chatId);
+      refreshChats();
     } catch (error) {
       const errorMsg = error.code === 'ECONNABORTED'
         ? 'Reset timed out - please try again'
         : `Reset failed: ${error.response?.data?.detail || error.message}`;
-      setMessages(prev => [...prev, {
-        role: 'system',
-        content: errorMsg
-      }]);
+      updateMessages(chatId, prev => [...prev, { role: 'system', content: errorMsg }]);
     }
-    setLoading(false);
+    setChatLoading(chatId, false);
   };
 
   const toggleSources = (index) => {
-    setExpandedSources(prev => ({ ...prev, [index]: !prev[index] }));
+    if (!activeChatId) return;
+    setExpandedSourcesByChat(prev => ({
+      ...prev,
+      [activeChatId]: { ...(prev[activeChatId] || {}), [index]: !(prev[activeChatId] || {})[index] }
+    }));
   };
 
-  const canChat = dbStatus.exists;
+  const canChat = !!activeChatId && dbStatus.exists;
 
   return (
     <div className="app">
       <div className="container">
         <Sidebar
+          chats={chats}
+          activeChatId={activeChatId}
+          onSwitchChat={switchChat}
+          onNewChat={() => setShowNewChatModal(true)}
+          onDeleteChat={handleDeleteChat}
           onClearChat={clearChat}
           onResetDatabase={resetDatabase}
           onOpenLibrary={() => setShowLibrary(true)}
+          onOpenApiKey={() => setShowApiKeyModal(true)}
+          apiKeyStatus={apiKeyStatus}
           loading={loading}
           dbStatus={dbStatus}
         />
 
-        {showLibrary && (
+        {showNewChatModal && (
+          <NewChatModal
+            chats={chats}
+            onCreate={handleCreateChat}
+            onClose={() => setShowNewChatModal(false)}
+          />
+        )}
+
+        {showApiKeyModal && (
+          <ApiKeyModal
+            onChanged={refreshApiKeyStatus}
+            onClose={() => setShowApiKeyModal(false)}
+          />
+        )}
+
+        {showLibrary && activeChatId && (
           <DocumentLibraryModal
+            chatId={activeChatId}
             onClose={() => setShowLibrary(false)}
-            onDocumentDeleted={checkStatuses}
+            onDocumentDeleted={() => { checkStatuses(activeChatId); refreshChats(); }}
           />
         )}
 
         {viewingSource && (
           <DocumentViewerModal
+            chatId={activeChatId}
             name={viewingSource.name}
             startIndex={viewingSource.start_index}
             length={viewingSource.length}
@@ -389,7 +513,18 @@ function App() {
           <div className="title">Document Q&amp;A</div>
           <div className="subtitle">Ask questions grounded in your uploaded PDFs</div>
 
-          {!canChat && messages.length === 0 ? (
+          {!chatsLoaded ? null : !activeChatId ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">
+                <UploadCloudIcon size={22} />
+              </div>
+              <h2>Create your first chat</h2>
+              <p>Each chat has its own set of documents. Start one empty, or copy an existing chat's documents.</p>
+              <button className="nav-item primary-action" onClick={() => setShowNewChatModal(true)}>
+                New chat
+              </button>
+            </div>
+          ) : !canChat && messages.length === 0 ? (
             <div className="empty-state">
               <div className="empty-state-icon">
                 <UploadCloudIcon size={22} />

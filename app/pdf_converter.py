@@ -14,12 +14,13 @@ def _extract_text_from_block(block: dict) -> str:
     return text
 
 
-def pdf_to_markdown(pdf_path: str) -> str:
+def pdf_to_markdown(pdf_path: str, output_dir: str = "files") -> str:
     """
     Convert a PDF document to markdown format with AI-generated image descriptions.
 
     Args:
         pdf_path: Path to the PDF file to convert
+        output_dir: Directory to write the markdown (and extracted images) to
 
     Returns:
         Path to the generated markdown file
@@ -27,7 +28,6 @@ def pdf_to_markdown(pdf_path: str) -> str:
     doc = fitz.open(pdf_path)
     markdown_text = ""
 
-    output_dir = "files"
     os.makedirs(output_dir, exist_ok=True)
 
     img_count = 0

@@ -61,3 +61,22 @@ export const SearchIcon = () => (
     <path d="M13 13l-3-3" />
   </svg>
 );
+
+export const PlusIcon = () => (
+  <svg {...base} width={12} height={12}>
+    <path d="M8 2.5v11M2.5 8h11" />
+  </svg>
+);
+
+export const MessageIcon = () => (
+  <svg {...base}>
+    <path d="M2.5 3.5h11a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H6l-3 2.5v-2.5h-.5a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z" />
+  </svg>
+);
+
+export const KeyIcon = () => (
+  <svg {...base}>
+    <circle cx="5" cy="11" r="2.5" />
+    <path d="M6.8 9.2 12.5 3.5M10.5 5.5l1.3 1.3M12.2 3.8l1.3 1.3" />
+  </svg>
+);

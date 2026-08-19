@@ -136,18 +136,26 @@ def delete_document(name: str, chroma_db_path: str, files_path: str) -> bool:
     Returns:
         True if the document was found and deleted, False if it wasn't found
     """
-    target_path = os.path.join(files_path, f"{name}.md")
+    target_filename = f"{name}.md"
     vectorstore = _get_vectorstore(chroma_db_path)
 
+    # Match by basename rather than a reconstructed full path: a chat cloned
+    # via shutil.copytree keeps the source chat's original file_name paths
+    # baked into its copied Chroma metadata, so this chat's own files_path
+    # never equals what's stored there even though the document is present.
     with _index_lock:
-        existing = vectorstore.get(where={"file_name": target_path}, include=[])
-        ids_to_delete = existing["ids"]
+        existing = vectorstore.get(include=["metadatas"])
+        ids_to_delete = [
+            id_ for id_, metadata in zip(existing["ids"], existing["metadatas"])
+            if os.path.basename(metadata.get("file_name", "")) == target_filename
+        ]
 
         if not ids_to_delete:
             return False
 
         vectorstore.delete(ids=ids_to_delete)
 
+    target_path = os.path.join(files_path, target_filename)
     if os.path.exists(target_path):
         os.remove(target_path)
 

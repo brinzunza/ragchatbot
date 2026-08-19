@@ -3,7 +3,7 @@ import axios from 'axios';
 import { API_BASE } from '../App';
 import { CloseIcon } from './Icons';
 
-function DocumentViewerModal({ name, startIndex, length, onClose }) {
+function DocumentViewerModal({ chatId, name, startIndex, length, onClose }) {
   const [content, setContent] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -13,7 +13,7 @@ function DocumentViewerModal({ name, startIndex, length, onClose }) {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    axios.get(`${API_BASE}/documents/${encodeURIComponent(name)}/content`)
+    axios.get(`${API_BASE}/chats/${chatId}/documents/${encodeURIComponent(name)}/content`)
       .then((response) => {
         if (!cancelled) setContent(response.data.content);
       })
@@ -24,7 +24,7 @@ function DocumentViewerModal({ name, startIndex, length, onClose }) {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [name]);
+  }, [chatId, name]);
 
   useEffect(() => {
     // 'auto' (instant) rather than 'smooth' - smooth scrolling is an

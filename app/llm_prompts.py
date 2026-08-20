@@ -3,23 +3,30 @@ from langchain_core.output_parsers import StrOutputParser
 from llm_config import get_llm
 
 
-# LLM instance with streaming support
-# Note: When using OpenAI, native prompt caching is automatically used.
-# When using Ollama (0.1.33+), KV cache reuse is automatically enabled
-# when the prefix of the prompt remains identical between calls.
-llm = get_llm(
-    temperature=0,
-    streaming=True,
-    num_predict=2000,  # Only used by Ollama
-    num_ctx=8192  # Only used by Ollama - ensure context window is large enough for caching
-)
+def _chat_llm():
+    """
+    Build a fresh LLM instance reflecting whatever provider is currently
+    configured. Called per chain build rather than once at import time, so
+    switching between OpenAI and Ollama via the API key setting takes effect
+    on the next request instead of requiring a backend restart.
+
+    Note: When using OpenAI, native prompt caching is automatically used.
+    When using Ollama (0.1.33+), KV cache reuse is automatically enabled
+    when the prefix of the prompt remains identical between calls.
+    """
+    return get_llm(
+        temperature=0,
+        streaming=True,
+        num_predict=2000,  # Only used by Ollama
+        num_ctx=8192  # Only used by Ollama - ensure context window is large enough for caching
+    )
 
 
 # QUESTION ANSWERING COMPONENTS
 
 # Main response generator
-# OPTIMIZATION: 'Knowledge Base' is placed BEFORE 'Conversation Context' 
-# because it is the largest static block. If follow-up questions use the 
+# OPTIMIZATION: 'Knowledge Base' is placed BEFORE 'Conversation Context'
+# because it is the largest static block. If follow-up questions use the
 # same documents, the KV cache for the documents will be reused even as history grows.
 generator_prompt = ChatPromptTemplate.from_messages([
     ("system", """You are a helpful, knowledgeable assistant. Answer the user's question directly, drawing on
@@ -33,18 +40,22 @@ generator_prompt = ChatPromptTemplate.from_messages([
     Provide a detailed, comprehensive answer to the user's question. Be direct, comprehensive, thorough, and accurate.
     Provide a complete answer without preamble or closing remarks. Just provide the answer as plain text,
     using ** only to mark Knowledge-Base-sourced spans."""),
-    ("user", """Knowledge Base: 
+    ("user", """Knowledge Base:
     {document}
 
-    Conversation Context: 
+    Conversation Context:
     {conversation_history}
 
-    Question: 
+    Question:
     {question}
 
     Answer:""")
 ])
-generator = generator_prompt | llm | StrOutputParser()
+
+
+def get_generator():
+    """Fresh generator chain, bound to whichever LLM is currently configured."""
+    return generator_prompt | _chat_llm() | StrOutputParser()
 
 
 # Hallucination detection component
@@ -69,19 +80,23 @@ hallucination_prompt = ChatPromptTemplate.from_messages([
 
     Return only {{"score": "yes"}} or {{"score": "no"}}""")
 ])
-hallucination_grader = hallucination_prompt | llm | StrOutputParser()
+
+
+def get_hallucination_grader():
+    """Fresh hallucination-grading chain, bound to whichever LLM is currently configured."""
+    return hallucination_prompt | _chat_llm() | StrOutputParser()
 
 
 # Answer quality evaluation component
 answer_prompt = ChatPromptTemplate.from_messages([
     ("system", "Does this answer adequately address the question? Consider the conversation context if relevant."),
-    ("user", """Answer to evaluate: 
+    ("user", """Answer to evaluate:
     {generation}
 
-    Conversation context: 
+    Conversation context:
     {conversation_history}
 
-    Question: 
+    Question:
     {question}
 
     Score 'yes' if the answer:
@@ -92,7 +107,11 @@ answer_prompt = ChatPromptTemplate.from_messages([
 
     Return only {{"score": "yes"}} or {{"score": "no"}}""")
 ])
-answer_grader = answer_prompt | llm | StrOutputParser()
+
+
+def get_answer_grader():
+    """Fresh answer-quality-grading chain, bound to whichever LLM is currently configured."""
+    return answer_prompt | _chat_llm() | StrOutputParser()
 
 
 # Query rewriting component
@@ -100,4 +119,8 @@ rewrite_prompt = ChatPromptTemplate.from_messages([
     ("system", "Rephrase the user's question so it is clear and self-contained for a search engine."),
     ("user", "Original Question: {question}\n\nOutput:")
 ])
-question_rewriter = rewrite_prompt | llm | StrOutputParser()
+
+
+def get_question_rewriter():
+    """Fresh query-rewriting chain, bound to whichever LLM is currently configured."""
+    return rewrite_prompt | _chat_llm() | StrOutputParser()

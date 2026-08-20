@@ -608,8 +608,8 @@ async def qa_chat_stream(chat_id: str, message: ChatMessage):
                 # Stream the LLM response directly
                 print("Starting LLM streaming...")
                 stream_start = time.time()
-                from llm_prompts import generator
-                stream_generator = generator.stream({
+                from llm_prompts import get_generator
+                stream_generator = get_generator().stream({
                     "conversation_history": message.conversation_history,
                     "document": documents_text,
                     "question": message.content

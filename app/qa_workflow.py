@@ -5,10 +5,10 @@ from typing import List, Tuple, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from llm_prompts import (
-    answer_grader,
-    generator,
-    hallucination_grader,
-    question_rewriter
+    get_answer_grader,
+    get_generator,
+    get_hallucination_grader,
+    get_question_rewriter
 )
 
 
@@ -97,6 +97,13 @@ def build_graph(retriever):
     Returns:
         Compiled workflow graph
     """
+    # Built once per graph (build_graph is called fresh for every request),
+    # so each request picks up whichever provider is currently configured
+    # instead of freezing whatever was active at process startup.
+    generator = get_generator()
+    hallucination_grader = get_hallucination_grader()
+    answer_grader = get_answer_grader()
+    question_rewriter = get_question_rewriter()
 
     def retrieve(state):
         """Retrieve relevant documents for the question."""

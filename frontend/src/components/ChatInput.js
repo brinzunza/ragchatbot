@@ -1,7 +1,7 @@
 import React from 'react';
-import { SendIcon } from './Icons';
+import { SendIcon, StopIcon } from './Icons';
 
-function ChatInput({ input, setInput, onSubmit, canChat, loading }) {
+function ChatInput({ input, setInput, onSubmit, onCancel, canChat, loading }) {
   return (
     <form onSubmit={onSubmit} className="chat-form">
       <div className="chat-input-wrap">
@@ -13,9 +13,15 @@ function ChatInput({ input, setInput, onSubmit, canChat, loading }) {
           disabled={!canChat || loading}
           className="chat-input"
         />
-        <button type="submit" className="send-button" disabled={!canChat || loading || !input.trim()}>
-          <SendIcon />
-        </button>
+        {loading ? (
+          <button type="button" className="send-button stop-button" onClick={onCancel} aria-label="Stop generating">
+            <StopIcon />
+          </button>
+        ) : (
+          <button type="submit" className="send-button" disabled={!canChat || !input.trim()}>
+            <SendIcon />
+          </button>
+        )}
       </div>
     </form>
   );

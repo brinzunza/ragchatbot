@@ -92,6 +92,9 @@ class ApiKeyStatus(BaseModel):
 class SetApiKeyRequest(BaseModel):
     api_key: str
 
+class SaveMessagesRequest(BaseModel):
+    messages: List[Dict]
+
 
 # Helper functions
 def get_database_status(chroma_db_path: str, files_path: str):
@@ -304,6 +307,29 @@ async def remove_chat(chat_id: str):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"failed to delete chat: {str(e)}")
+
+@app.get("/chats/{chat_id}/messages")
+async def get_messages(chat_id: str):
+    """Load a chat's persisted conversation history"""
+    try:
+        return {"messages": chat_manager.get_messages(chat_id)}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"failed to load messages: {str(e)}")
+
+@app.put("/chats/{chat_id}/messages")
+async def save_messages(chat_id: str, request: SaveMessagesRequest):
+    """Persist a chat's full conversation history"""
+    try:
+        chat_manager.save_messages(chat_id, request.messages)
+        return StatusResponse(status="success", message="messages saved")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"failed to save messages: {str(e)}")
 
 
 # --- Per-chat document database ---

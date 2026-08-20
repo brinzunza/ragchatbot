@@ -1032,6 +1032,14 @@ button, input {
   cursor: not-allowed;
 }
 
+.stop-button {
+  background: var(--color-text);
+}
+
+.stop-button:hover {
+  opacity: 0.85;
+}
+
 /* Loading / streaming */
 .loading {
   font-size: 12px;

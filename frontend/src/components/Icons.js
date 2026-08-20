@@ -42,6 +42,12 @@ export const SendIcon = () => (
   </svg>
 );
 
+export const StopIcon = () => (
+  <svg {...base} width={12} height={12} stroke="none" fill="currentColor">
+    <rect x="2" y="2" width="12" height="12" rx="2" />
+  </svg>
+);
+
 export const FileTextIcon = () => (
   <svg {...base}>
     <path d="M4.5 1.5h4.8L12 4.2v9.3a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1Z" />

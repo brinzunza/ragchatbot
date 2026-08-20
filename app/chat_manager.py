@@ -18,8 +18,55 @@ def _meta_path(chat_id: str) -> str:
     return os.path.join(_chat_dir(chat_id), "meta.json")
 
 
+def _messages_path(chat_id: str) -> str:
+    return os.path.join(_chat_dir(chat_id), "messages.json")
+
+
 def chat_exists(chat_id: str) -> bool:
     return os.path.exists(_meta_path(chat_id))
+
+
+def get_messages(chat_id: str) -> List[dict]:
+    """
+    Load a chat's persisted conversation history.
+
+    Args:
+        chat_id: The chat's id
+
+    Returns:
+        List of message dicts, oldest first. Empty if none saved yet.
+
+    Raises:
+        ValueError: if the chat doesn't exist
+    """
+    if not chat_exists(chat_id):
+        raise ValueError(f"Chat not found: {chat_id}")
+    path = _messages_path(chat_id)
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_messages(chat_id: str, messages: List[dict]) -> None:
+    """
+    Persist a chat's full conversation history, overwriting whatever was
+    saved before. The frontend calls this with its current in-memory
+    message list at each settled point (a message finishing, not mid-stream)
+    rather than one message at a time, so this is a full replace, not an
+    append.
+
+    Args:
+        chat_id: The chat's id
+        messages: The complete message list to save
+
+    Raises:
+        ValueError: if the chat doesn't exist
+    """
+    if not chat_exists(chat_id):
+        raise ValueError(f"Chat not found: {chat_id}")
+    with open(_messages_path(chat_id), "w", encoding="utf-8") as f:
+        json.dump(messages, f)
 
 
 def get_chat_paths(chat_id: str):

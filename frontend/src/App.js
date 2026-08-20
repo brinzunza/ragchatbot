@@ -45,6 +45,8 @@ function App() {
 
   const messagesEndRef = useRef(null);
   const uploadIntervalsRef = useRef({});
+  const abortControllersRef = useRef({});
+  const loadedMessagesRef = useRef(new Set());
 
   const messages = messagesByChat[activeChatId] || EMPTY_MESSAGES;
   const uploadQueue = uploadQueueByChat[activeChatId] || EMPTY_UPLOAD_QUEUE;
@@ -57,6 +59,30 @@ function App() {
       ...prev,
       [chatId]: typeof updater === 'function' ? updater(prev[chatId] || []) : updater
     }));
+  };
+
+  // Persists the full message list at "settled" points only (a message
+  // finishing, not each streamed chunk) - strips the transient `streaming`
+  // flag so a reload never resumes into a stuck in-progress bubble.
+  const persistMessages = (chatId, messages) => {
+    const toSave = messages.map(({ streaming, ...rest }) => rest);
+    axios.put(`${API_BASE}/chats/${chatId}/messages`, { messages: toSave })
+      .catch(error => console.error('failed to persist messages:', error));
+  };
+
+  // Loads a chat's saved history the first time it becomes active. Once
+  // loaded, messagesByChat is the source of truth for the session - later
+  // switches back to this chat don't re-fetch and clobber local state.
+  const loadMessages = async (chatId) => {
+    if (loadedMessagesRef.current.has(chatId)) return;
+    loadedMessagesRef.current.add(chatId);
+    try {
+      const response = await axios.get(`${API_BASE}/chats/${chatId}/messages`);
+      setMessagesByChat(prev => ({ ...prev, [chatId]: response.data.messages || [] }));
+    } catch (error) {
+      console.error('failed to load messages:', error);
+      loadedMessagesRef.current.delete(chatId);
+    }
   };
 
   const updateUploadQueue = (chatId, updater) => {
@@ -97,6 +123,7 @@ function App() {
       if (fetched && fetched.length > 0) {
         setActiveChatId(fetched[0].id);
         checkStatuses(fetched[0].id);
+        loadMessages(fetched[0].id);
       }
       setChatsLoaded(true);
     })();
@@ -109,11 +136,14 @@ function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Cleanup upload polling on unmount
+  // Cleanup upload polling and in-flight chat requests on unmount
   useEffect(() => {
     return () => {
       Object.values(uploadIntervalsRef.current).forEach(interval => {
         clearInterval(interval);
+      });
+      Object.values(abortControllersRef.current).forEach(controller => {
+        controller.abort();
       });
     };
   }, []);
@@ -133,6 +163,7 @@ function App() {
     setViewingSource(null);
     setView('chat');
     checkStatuses(chatId);
+    loadMessages(chatId);
   };
 
   const handleCreateChat = async (name, copyFrom) => {
@@ -194,10 +225,14 @@ function App() {
           clearInterval(uploadIntervalsRef.current[uploadId]);
           delete uploadIntervalsRef.current[uploadId];
         }
-        updateMessages(chatId, prev => [...prev, {
-          role: 'system',
-          content: `Successfully processed ${status.total_files} document${status.total_files === 1 ? '' : 's'}`
-        }]);
+        updateMessages(chatId, prev => {
+          const next = [...prev, {
+            role: 'system',
+            content: `Successfully processed ${status.total_files} document${status.total_files === 1 ? '' : 's'}`
+          }];
+          persistMessages(chatId, next);
+          return next;
+        });
         checkStatuses(chatId);
         refreshChats();
 
@@ -209,10 +244,14 @@ function App() {
           clearInterval(uploadIntervalsRef.current[uploadId]);
           delete uploadIntervalsRef.current[uploadId];
         }
-        updateMessages(chatId, prev => [...prev, {
-          role: 'system',
-          content: `Upload failed: ${status.message}`
-        }]);
+        updateMessages(chatId, prev => {
+          const next = [...prev, {
+            role: 'system',
+            content: `Upload failed: ${status.message}`
+          }];
+          persistMessages(chatId, next);
+          return next;
+        });
 
         setTimeout(() => {
           updateUploadQueue(chatId, prev => prev.filter(u => u.uploadId !== uploadId));
@@ -280,10 +319,14 @@ function App() {
 
     } catch (error) {
       updateUploadQueue(chatId, prev => prev.filter(u => u.uploadId !== tempId));
-      updateMessages(chatId, prev => [...prev, {
-        role: 'system',
-        content: `Upload failed: ${error.response?.data?.detail || error.message}`
-      }]);
+      updateMessages(chatId, prev => {
+        const next = [...prev, {
+          role: 'system',
+          content: `Upload failed: ${error.response?.data?.detail || error.message}`
+        }];
+        persistMessages(chatId, next);
+        return next;
+      });
     }
   };
 
@@ -296,7 +339,11 @@ function App() {
     const currentInput = input;
 
     const userMessage = { role: 'user', content: currentInput };
-    updateMessages(chatId, prev => [...prev, userMessage]);
+    updateMessages(chatId, prev => {
+      const next = [...prev, userMessage];
+      persistMessages(chatId, next);
+      return next;
+    });
     setChatLoading(chatId, true);
 
     const assistantMessage = {
@@ -307,6 +354,9 @@ function App() {
       streaming: true
     };
     updateMessages(chatId, prev => [...prev, assistantMessage]);
+
+    const controller = new AbortController();
+    abortControllersRef.current[chatId] = controller;
 
     try {
       const conversationHistory = priorMessages
@@ -327,7 +377,8 @@ function App() {
         body: JSON.stringify({
           content: currentInput,
           conversation_history: conversationHistory
-        })
+        }),
+        signal: controller.signal
       });
 
       if (!response.ok) {
@@ -392,6 +443,7 @@ function App() {
                       sources: lastMessage.sources
                     };
                   }
+                  persistMessages(chatId, newMessages);
                   return newMessages;
                 });
                 break;
@@ -405,22 +457,45 @@ function App() {
         }
       }
     } catch (error) {
-      updateMessages(chatId, prev => {
-        const newMessages = prev.slice(0, -1);
-        return [...newMessages, {
-          role: 'assistant',
-          content: `Error: ${error.message}`
-        }];
-      });
+      if (error.name === 'AbortError') {
+        // Cancelled by the user - keep whatever content already streamed in,
+        // just stop treating it as in-progress.
+        updateMessages(chatId, prev => {
+          const newMessages = [...prev];
+          const lastMessage = newMessages[newMessages.length - 1];
+          if (lastMessage?.role === 'assistant' && lastMessage.streaming) {
+            newMessages[newMessages.length - 1] = { ...lastMessage, streaming: false };
+          }
+          persistMessages(chatId, newMessages);
+          return newMessages;
+        });
+      } else {
+        updateMessages(chatId, prev => {
+          const newMessages = prev.slice(0, -1);
+          const next = [...newMessages, {
+            role: 'assistant',
+            content: `Error: ${error.message}`
+          }];
+          persistMessages(chatId, next);
+          return next;
+        });
+      }
     }
 
+    delete abortControllersRef.current[chatId];
     setChatLoading(chatId, false);
     if (chatId === activeChatId) setInput('');
+  };
+
+  const handleCancelResponse = () => {
+    if (!activeChatId) return;
+    abortControllersRef.current[activeChatId]?.abort();
   };
 
   const clearChat = () => {
     if (!activeChatId) return;
     updateMessages(activeChatId, []);
+    persistMessages(activeChatId, []);
   };
 
   const resetDatabase = async () => {
@@ -440,14 +515,20 @@ function App() {
       await axios.post(`${API_BASE}/chats/${chatId}/database/reset`, {}, {
         timeout: 10000
       });
-      updateMessages(chatId, [{ role: 'system', content: 'Database reset successfully' }]);
+      const resetMessage = [{ role: 'system', content: 'Database reset successfully' }];
+      updateMessages(chatId, resetMessage);
+      persistMessages(chatId, resetMessage);
       checkStatuses(chatId);
       refreshChats();
     } catch (error) {
       const errorMsg = error.code === 'ECONNABORTED'
         ? 'Reset timed out - please try again'
         : `Reset failed: ${error.response?.data?.detail || error.message}`;
-      updateMessages(chatId, prev => [...prev, { role: 'system', content: errorMsg }]);
+      updateMessages(chatId, prev => {
+        const next = [...prev, { role: 'system', content: errorMsg }];
+        persistMessages(chatId, next);
+        return next;
+      });
     }
     setChatLoading(chatId, false);
   };
@@ -503,6 +584,7 @@ function App() {
             input={input}
             setInput={setInput}
             onSubmit={handleSubmit}
+            onCancel={handleCancelResponse}
             canChat={canChat}
             loading={loading}
           />

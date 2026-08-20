@@ -38,7 +38,7 @@ function DocumentLibraryModal({ chatId, onClose, onDocumentDeleted }) {
       const response = await axios.get(`${API_BASE}/chats/${chatId}/documents`);
       setDocuments(response.data);
     } catch (err) {
-      setError('Failed to load documents');
+      setError('failed to load documents');
     }
     setLoading(false);
   };
@@ -50,7 +50,7 @@ function DocumentLibraryModal({ chatId, onClose, onDocumentDeleted }) {
       setDocuments((prev) => prev.filter((doc) => doc.name !== name));
       onDocumentDeleted();
     } catch (err) {
-      setError(`Failed to delete "${name}"`);
+      setError(`failed to delete "${name}"`);
     }
     setConfirmingName(null);
     setDeletingName(null);
@@ -64,8 +64,8 @@ function DocumentLibraryModal({ chatId, onClose, onDocumentDeleted }) {
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>Documents</h2>
-          <button className="modal-close" onClick={onClose} aria-label="Close">
+          <h2>documents</h2>
+          <button className="modal-close" onClick={onClose} aria-label="close">
             <CloseIcon />
           </button>
         </div>
@@ -74,7 +74,7 @@ function DocumentLibraryModal({ chatId, onClose, onDocumentDeleted }) {
           <SearchIcon />
           <input
             type="text"
-            placeholder="Search documents..."
+            placeholder="search documents..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             autoFocus
@@ -82,16 +82,16 @@ function DocumentLibraryModal({ chatId, onClose, onDocumentDeleted }) {
         </div>
 
         <div className="modal-body">
-          {loading && <div className="modal-empty">Loading...</div>}
+          {loading && <div className="modal-empty">loading...</div>}
 
           {!loading && error && <div className="modal-empty modal-error">{error}</div>}
 
           {!loading && !error && documents.length === 0 && (
-            <div className="modal-empty">No documents indexed yet.</div>
+            <div className="modal-empty">no documents indexed yet.</div>
           )}
 
           {!loading && !error && documents.length > 0 && filtered.length === 0 && (
-            <div className="modal-empty">No documents match "{query}".</div>
+            <div className="modal-empty">no documents match "{query}".</div>
           )}
 
           {!loading && !error && filtered.map((doc) => (
@@ -106,23 +106,23 @@ function DocumentLibraryModal({ chatId, onClose, onDocumentDeleted }) {
 
               {confirmingName === doc.name ? (
                 <div className="document-row-confirm">
-                  <span>Delete?</span>
+                  <span>delete?</span>
                   <button
                     className="confirm-yes"
                     onClick={() => handleDelete(doc.name)}
                     disabled={deletingName === doc.name}
                   >
-                    {deletingName === doc.name ? 'Deleting...' : 'Yes'}
+                    {deletingName === doc.name ? 'deleting...' : 'yes'}
                   </button>
                   <button className="confirm-cancel" onClick={() => setConfirmingName(null)}>
-                    Cancel
+                    cancel
                   </button>
                 </div>
               ) : (
                 <button
                   className="document-row-delete"
                   onClick={() => setConfirmingName(doc.name)}
-                  aria-label={`Delete ${doc.name}`}
+                  aria-label={`delete ${doc.name}`}
                 >
                   <TrashIcon />
                 </button>

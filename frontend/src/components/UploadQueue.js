@@ -5,7 +5,7 @@ function UploadQueue({ uploadQueue }) {
 
   return (
     <div className="upload-queue">
-      <div className="queue-header">Uploading ({uploadQueue.length})</div>
+      <div className="queue-header">uploading ({uploadQueue.length})</div>
       {uploadQueue.map((upload) => {
         const active = upload.status !== 'completed' && upload.status !== 'error';
         return (
@@ -24,7 +24,7 @@ function UploadQueue({ uploadQueue }) {
             />
           </div>
           {upload.currentFile && (
-            <div className="progress-file">Processing: {upload.currentFile}</div>
+            <div className="progress-file">processing: {upload.currentFile}</div>
           )}
           {upload.totalFiles > 0 && (
             <div className="progress-count">{upload.processedFiles} / {upload.totalFiles} files</div>

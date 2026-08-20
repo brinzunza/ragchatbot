@@ -545,18 +545,18 @@ function App() {
 
   const renderChatView = () => (
     <>
-      <div className="title">Document Q&amp;A</div>
-      <div className="subtitle">Ask questions grounded in your uploaded PDFs</div>
+      <div className="title">document q&amp;a</div>
+      <div className="subtitle">ask questions grounded in your uploaded pdfs</div>
 
       {!chatsLoaded ? null : !activeChatId ? (
         <div className="empty-state">
           <div className="empty-state-icon">
             <UploadCloudIcon size={22} />
           </div>
-          <h2>Create your first chat</h2>
-          <p>Each chat has its own set of documents. Start one empty, or copy an existing chat's documents.</p>
+          <h2>create your first chat</h2>
+          <p>each chat has its own set of documents. start one empty, or copy an existing chat's documents.</p>
           <button className="nav-item primary-action" onClick={() => setShowNewChatModal(true)}>
-            New chat
+            new chat
           </button>
         </div>
       ) : !canChat && messages.length === 0 ? (
@@ -564,8 +564,8 @@ function App() {
           <div className="empty-state-icon">
             <UploadCloudIcon size={22} />
           </div>
-          <h2>Upload documents to begin</h2>
-          <p>Add one or more PDFs and Athena will index them for grounded, cited answers.</p>
+          <h2>upload documents to begin</h2>
+          <p>add one or more pdfs and athena will index them for grounded, cited answers.</p>
           <UploadDropzone onFiles={handleFileUpload} disabled={loading} />
           <UploadQueue uploadQueue={uploadQueue} />
         </div>
@@ -589,7 +589,7 @@ function App() {
             loading={loading}
           />
           {loading && !messages[messages.length - 1]?.streaming && (
-            <div className="loading">Working...</div>
+            <div className="loading">working...</div>
           )}
         </>
       )}

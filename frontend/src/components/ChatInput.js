@@ -9,7 +9,7 @@ function ChatInput({ input, setInput, onSubmit, onCancel, canChat, loading }) {
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder={canChat ? 'Ask about your documents...' : 'Upload PDF files first'}
+          placeholder={canChat ? 'ask about your documents...' : 'upload pdf files first'}
           disabled={!canChat || loading}
           className="chat-input"
         />

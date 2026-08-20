@@ -23,7 +23,7 @@ function NewChatModal({ chats, onCreate, onClose }) {
     try {
       await onCreate(name.trim(), copyFrom || null);
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to create chat');
+      setError(err.response?.data?.detail || 'failed to create chat');
       setCreating(false);
     }
   };
@@ -32,25 +32,25 @@ function NewChatModal({ chats, onCreate, onClose }) {
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>New chat</h2>
-          <button className="modal-close" onClick={onClose} aria-label="Close">
+          <h2>new chat</h2>
+          <button className="modal-close" onClick={onClose} aria-label="close">
             <CloseIcon />
           </button>
         </div>
 
         <form className="new-chat-form" onSubmit={handleSubmit}>
-          <label className="field-label" htmlFor="new-chat-name">Name</label>
+          <label className="field-label" htmlFor="new-chat-name">name</label>
           <input
             id="new-chat-name"
             type="text"
             className="field-input"
-            placeholder="e.g. Research notes"
+            placeholder="e.g. research notes"
             value={name}
             onChange={(e) => setName(e.target.value)}
             autoFocus
           />
 
-          <div className="field-label">Documents</div>
+          <div className="field-label">documents</div>
           <label className="radio-row">
             <input
               type="radio"
@@ -58,7 +58,7 @@ function NewChatModal({ chats, onCreate, onClose }) {
               checked={copyFrom === ''}
               onChange={() => setCopyFrom('')}
             />
-            Start empty
+            start empty
           </label>
           <label className="radio-row">
             <input
@@ -68,7 +68,7 @@ function NewChatModal({ chats, onCreate, onClose }) {
               disabled={chats.length === 0}
               onChange={() => setCopyFrom(chats[0]?.id || '')}
             />
-            Copy from an existing chat
+            copy from an existing chat
           </label>
 
           {copyFrom !== '' && (
@@ -88,7 +88,7 @@ function NewChatModal({ chats, onCreate, onClose }) {
           {error && <div className="field-error">{error}</div>}
 
           <button type="submit" className="primary-action" disabled={!name.trim() || creating}>
-            {creating ? 'Creating...' : 'Create chat'}
+            {creating ? 'creating...' : 'create chat'}
           </button>
         </form>
       </div>

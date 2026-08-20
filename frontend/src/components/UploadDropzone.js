@@ -42,7 +42,7 @@ function UploadDropzone({ onFiles, disabled, compact }) {
       <div className="upload-compact">
         <button className="nav-item" onClick={openPicker} disabled={disabled}>
           <UploadCloudIcon />
-          Add more documents
+          add more documents
         </button>
         {hiddenInput}
       </div>
@@ -60,8 +60,8 @@ function UploadDropzone({ onFiles, disabled, compact }) {
       tabIndex={0}
     >
       <UploadCloudIcon size={22} />
-      <div className="dropzone-label">Drop PDF files here, or click to browse</div>
-      <div className="dropzone-hint">PDF only &middot; multiple files supported</div>
+      <div className="dropzone-label">drop pdf files here, or click to browse</div>
+      <div className="dropzone-hint">pdf only &middot; multiple files supported</div>
       {hiddenInput}
     </div>
   );

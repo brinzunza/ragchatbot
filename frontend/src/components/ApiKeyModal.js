@@ -31,7 +31,7 @@ function ApiKeyModal({ onClose, onChanged }) {
       const response = await axios.get(`${API_BASE}/settings/api-key`);
       setStatus(response.data);
     } catch (err) {
-      setError('Failed to load API key status');
+      setError('failed to load api key status');
     }
     setLoading(false);
   };
@@ -47,7 +47,7 @@ function ApiKeyModal({ onClose, onChanged }) {
       setApiKey('');
       onChanged();
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to save API key');
+      setError(err.response?.data?.detail || 'failed to save api key');
     }
     setSaving(false);
   };
@@ -60,7 +60,7 @@ function ApiKeyModal({ onClose, onChanged }) {
       setStatus(response.data);
       onChanged();
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to remove API key');
+      setError(err.response?.data?.detail || 'failed to remove api key');
     }
     setRemoving(false);
   };
@@ -69,26 +69,26 @@ function ApiKeyModal({ onClose, onChanged }) {
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>OpenAI API key</h2>
-          <button className="modal-close" onClick={onClose} aria-label="Close">
+          <h2>openai api key</h2>
+          <button className="modal-close" onClick={onClose} aria-label="close">
             <CloseIcon />
           </button>
         </div>
 
         <div className="new-chat-form">
-          {loading && <div className="modal-empty">Loading...</div>}
+          {loading && <div className="modal-empty">loading...</div>}
 
           {!loading && status && (
             <div className="api-key-status">
               {status.has_key ? (
                 <>
                   <span className={`status-dot active`} />
-                  Using OpenAI ({status.model}) — key <code>{status.masked_key}</code>
+                  using OpenAI ({status.model}) — key <code>{status.masked_key}</code>
                 </>
               ) : (
                 <>
                   <span className="status-dot" />
-                  No key set — using local Ollama ({status.model})
+                  no key set — using local Ollama ({status.model})
                 </>
               )}
             </div>
@@ -96,7 +96,7 @@ function ApiKeyModal({ onClose, onChanged }) {
 
           <form onSubmit={handleSave}>
             <label className="field-label" htmlFor="api-key-input">
-              {status?.has_key ? 'Replace key' : 'Add a key'}
+              {status?.has_key ? 'replace key' : 'add a key'}
             </label>
             <div className="api-key-input-row">
               <input
@@ -114,16 +114,16 @@ function ApiKeyModal({ onClose, onChanged }) {
                 type="button"
                 className="api-key-toggle"
                 onClick={() => setShowKey((v) => !v)}
-                aria-label={showKey ? 'Hide key' : 'Show key'}
+                aria-label={showKey ? 'hide key' : 'show key'}
               >
-                {showKey ? 'Hide' : 'Show'}
+                {showKey ? 'hide' : 'show'}
               </button>
             </div>
 
             {error && <div className="field-error">{error}</div>}
 
             <button type="submit" className="primary-action" disabled={!apiKey.trim() || saving}>
-              {saving ? 'Saving...' : 'Save key'}
+              {saving ? 'saving...' : 'save key'}
             </button>
           </form>
 
@@ -134,7 +134,7 @@ function ApiKeyModal({ onClose, onChanged }) {
               onClick={handleRemove}
               disabled={removing}
             >
-              {removing ? 'Removing...' : 'Remove key and use local Ollama instead'}
+              {removing ? 'removing...' : 'remove key and use local Ollama instead'}
             </button>
           )}
         </div>

@@ -18,7 +18,7 @@ function DocumentViewerModal({ chatId, name, startIndex, length, onClose }) {
         if (!cancelled) setContent(response.data.content);
       })
       .catch(() => {
-        if (!cancelled) setError('Failed to load document content');
+        if (!cancelled) setError('failed to load document content');
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -52,13 +52,13 @@ function DocumentViewerModal({ chatId, name, startIndex, length, onClose }) {
       <div className="modal-card viewer-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>{name}</h2>
-          <button className="modal-close" onClick={onClose} aria-label="Close">
+          <button className="modal-close" onClick={onClose} aria-label="close">
             <CloseIcon />
           </button>
         </div>
 
         <div className="viewer-body">
-          {loading && <div className="modal-empty">Loading...</div>}
+          {loading && <div className="modal-empty">loading...</div>}
           {!loading && error && <div className="modal-empty modal-error">{error}</div>}
           {!loading && !error && content != null && (
             <pre className="viewer-content">

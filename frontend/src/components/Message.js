@@ -30,7 +30,7 @@ function Message({ message, expanded, onToggleSources, onViewSource }) {
             <span className={`arrow ${expanded ? 'expanded' : ''}`}>
               <ChevronRightIcon />
             </span>
-            {sources.length === 1 ? 'Source' : `Sources (${sources.length})`}
+            {sources.length === 1 ? 'source' : `sources (${sources.length})`}
           </button>
           {expanded && (
             <div className="source-chips">

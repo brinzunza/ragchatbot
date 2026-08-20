@@ -138,16 +138,18 @@ button, input {
   justify-content: flex-end;
   gap: 6px;
   padding: 4px 6px;
+  padding-right: 6px;
   color: var(--ink-2);
   font-size: 13px;
   text-align: right;
   cursor: pointer;
-  transition: color var(--transition);
+  transition: color var(--transition), padding-right var(--transition);
   max-width: 100%;
 }
 
 .chat-list-item:hover {
   color: var(--ink-1);
+  padding-right: 22px;
 }
 
 .chat-list-item.active {
@@ -166,28 +168,6 @@ button, input {
   text-overflow: ellipsis;
 }
 
-.chat-list-delete {
-  flex-shrink: 0;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border: none;
-  background: none;
-  color: var(--ink-2);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.chat-list-item:hover .chat-list-delete {
-  display: flex;
-}
-
-.chat-list-delete:hover {
-  color: var(--ink-1);
-}
-
 .chat-list-confirm {
   flex-shrink: 0;
   display: flex;
@@ -199,6 +179,14 @@ button, input {
 .chat-list-confirm .confirm-cancel {
   padding: 2px 6px;
   font-size: 11px;
+}
+
+.session-delete-confirm {
+  width: 100%;
+  justify-content: flex-end;
+  padding: 4px 6px;
+  font-size: 13px;
+  color: var(--ink-2);
 }
 
 .nav-item {
@@ -219,6 +207,17 @@ button, input {
 
 .nav-item:hover:not(:disabled) {
   color: var(--ink-1);
+}
+
+/* Every right-aligned sidebar row - chat names and nav buttons alike -
+   nudges left on hover, matching the reference site's link treatment. */
+.sidebar .nav-item {
+  padding-right: 6px;
+  transition: color var(--transition), padding-right var(--transition);
+}
+
+.sidebar .nav-item:hover:not(:disabled) {
+  padding-right: 22px;
 }
 
 .nav-item.active {

@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { TrashIcon } from './Icons';
 
 function Sidebar({
   chats,
@@ -18,17 +17,11 @@ function Sidebar({
   loading,
   dbStatus
 }) {
-  const [confirmingChatId, setConfirmingChatId] = useState(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
-  const handleDeleteClick = (e, chatId) => {
-    e.stopPropagation();
-    setConfirmingChatId(chatId);
-  };
-
-  const handleConfirmDelete = (e, chatId) => {
-    e.stopPropagation();
-    setConfirmingChatId(null);
-    onDeleteChat(chatId);
+  const handleConfirmDelete = () => {
+    setConfirmingDelete(false);
+    onDeleteChat(activeChatId);
   };
 
   return (
@@ -45,21 +38,6 @@ function Sidebar({
               onClick={() => onSwitchChat(chat.id)}
             >
               <span className="chat-list-name">{chat.name}</span>
-
-              {confirmingChatId === chat.id ? (
-                <span className="chat-list-confirm" onClick={(e) => e.stopPropagation()}>
-                  <button className="confirm-yes" onClick={(e) => handleConfirmDelete(e, chat.id)}>yes</button>
-                  <button className="confirm-cancel" onClick={(e) => { e.stopPropagation(); setConfirmingChatId(null); }}>no</button>
-                </span>
-              ) : (
-                <button
-                  className="chat-list-delete"
-                  onClick={(e) => handleDeleteClick(e, chat.id)}
-                  aria-label={`delete ${chat.name}`}
-                >
-                  <TrashIcon />
-                </button>
-              )}
             </div>
           ))}
         </div>
@@ -85,6 +63,17 @@ function Sidebar({
             <button onClick={onResetDatabase} className="nav-item" disabled={loading}>
               reset database
             </button>
+            {confirmingDelete ? (
+              <span className="chat-list-confirm session-delete-confirm">
+                delete this chat?
+                <button className="confirm-yes" onClick={handleConfirmDelete}>yes</button>
+                <button className="confirm-cancel" onClick={() => setConfirmingDelete(false)}>no</button>
+              </span>
+            ) : (
+              <button onClick={() => setConfirmingDelete(true)} className="nav-item" disabled={loading}>
+                delete chat
+              </button>
+            )}
           </div>
 
           <div className="sidebar-status">

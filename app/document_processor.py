@@ -49,6 +49,17 @@ class _LockedEmbeddings(Embeddings):
             return self._inner.embed_query(text)
 
 
+# Serializes construction of chromadb clients. chromadb caches System
+# objects process-wide by path (SharedSystemClient), and building the first
+# client for a given identifier isn't safe to race - two uploads calling
+# _get_vectorstore for the same path at once (e.g. right after a reset
+# empties the cache) can each create a separate System pointed at the same
+# sqlite file, corrupting chromadb's client-side state ('RustBindingsAPI'
+# object has no attribute 'bindings'). Every client construction and cache
+# clear goes through this lock so that never happens.
+_vectorstore_lock = threading.Lock()
+
+
 def _get_vectorstore(chroma_db_path: str) -> Chroma:
     """
     Get a Chroma vectorstore handle. Cheap to call repeatedly - a fresh
@@ -65,8 +76,24 @@ def _get_vectorstore(chroma_db_path: str) -> Chroma:
     embedding_model = _LockedEmbeddings(
         NomicEmbeddings(model="nomic-embed-text-v1.5", inference_mode="local")
     )
-    client = chromadb.PersistentClient(path=chroma_db_path)
-    return Chroma(client=client, collection_name=_COLLECTION_NAME, embedding_function=embedding_model)
+    with _vectorstore_lock:
+        client = chromadb.PersistentClient(path=chroma_db_path)
+        return Chroma(client=client, collection_name=_COLLECTION_NAME, embedding_function=embedding_model)
+
+
+def clear_vectorstore_cache() -> None:
+    """
+    Drop chromadb's process-wide cache of System objects keyed by path.
+
+    Must be called after deleting a chroma_db directory out from under a
+    live client (e.g. a reset that shutil.rmtrees it) - chromadb caches the
+    System/connection for a given path across "fresh" PersistentClient(...)
+    calls, so without this the next client built for that same path reuses
+    a connection pointed at the now-deleted file and every write fails with
+    "attempt to write a readonly database" (SQLITE_READONLY_DBMOVED).
+    """
+    with _vectorstore_lock:
+        chromadb.api.client.SharedSystemClient.clear_system_cache()
 
 
 def has_documents(chroma_db_path: str) -> bool:

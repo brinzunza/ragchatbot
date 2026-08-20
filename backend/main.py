@@ -15,7 +15,7 @@ import uuid
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'app'))
 
 from pdf_converter import pdf_to_markdown
-from document_processor import get_retriever, index_documents, list_documents, delete_document, has_documents
+from document_processor import get_retriever, index_documents, list_documents, delete_document, has_documents, clear_vectorstore_cache
 from qa_workflow import build_graph as build_qa_graph
 import chat_manager
 import llm_config
@@ -321,6 +321,7 @@ async def reset_database(chat_id: str):
     try:
         if os.path.exists(chroma_db_path):
             shutil.rmtree(chroma_db_path)
+            clear_vectorstore_cache()
         if os.path.exists(files_path):
             shutil.rmtree(files_path)
         os.makedirs(files_path, exist_ok=True)

@@ -8,7 +8,9 @@ from llm_prompts import (
     get_answer_grader,
     get_generator,
     get_hallucination_grader,
-    get_question_rewriter
+    get_question_rewriter,
+    get_relevance_checker,
+    parse_relevance_verdict
 )
 
 
@@ -53,6 +55,41 @@ def format_sources_for_display(documents) -> str:
     result = "\n".join(source_lines)
     print(f"  [format_sources] Final result: {repr(result)}")
     return result
+
+
+def filter_relevant_documents(question: str, documents: List, relevance_checker) -> List:
+    """
+    Keep only the retrieved documents individually judged relevant to the
+    question, using the relevance-gate chain from llm_prompts.
+
+    Checking chunk by chunk - rather than one combined check over every
+    retrieved chunk concatenated together - was the difference between a
+    reliable gate and a flaky one in testing. Retrieved chunks are each
+    prefixed with an AI-generated summary, and several unrelated summaries
+    stacked together push a small local model to a needle-in-haystack miss
+    it doesn't make when it only has to look for a fact in one chunk at a
+    time; the same input, asked as one combined judgment, would flip
+    between "relevant" and "not relevant" from run to run on this app's
+    default local model (Ollama/llama3.2). This is also strictly more
+    precise: a question that only one of three retrieved chunks actually
+    answers now surfaces just that one, both to the generator and in the
+    sources shown to the user, instead of an include-everything-or-nothing
+    verdict.
+
+    Args:
+        question: The user's question
+        documents: Retrieved document objects to filter
+        relevance_checker: A relevance-gate chain from get_relevance_checker()
+
+    Returns:
+        The subset of documents judged relevant, in their original order
+    """
+    relevant = []
+    for doc in documents:
+        response = relevance_checker.invoke({"question": question, "document": doc.page_content})
+        if parse_relevance_verdict(response):
+            relevant.append(doc)
+    return relevant
 
 
 def get_sources_metadata(documents) -> List[dict]:
@@ -104,6 +141,7 @@ def build_graph(retriever):
     hallucination_grader = get_hallucination_grader()
     answer_grader = get_answer_grader()
     question_rewriter = get_question_rewriter()
+    relevance_checker = get_relevance_checker()
 
     def retrieve(state):
         """Retrieve relevant documents for the question."""
@@ -133,9 +171,10 @@ def build_graph(retriever):
             duration = step_start - state["last_step_time"]
             print(f"Time since last step: {duration:.3f}s")
 
-        documents_text = ""
-        for doc in state["documents"]:
-            documents_text += doc.page_content
+        documents = filter_relevant_documents(state["question"], state["documents"], relevance_checker)
+        print(f"Relevance check: {len(documents)}/{len(state['documents'])} chunks kept")
+
+        documents_text = "".join(doc.page_content for doc in documents)
 
         llm_start = time.time()
 
@@ -162,7 +201,7 @@ def build_graph(retriever):
 
         generation_text = llm_response if llm_response else "I could not generate a response."
 
-        source_info = format_sources_for_display(state["documents"])
+        source_info = format_sources_for_display(documents)
         generation_with_sources = generation_text + "\n\n" + source_info
 
         total_time = time.time() - step_start
@@ -171,6 +210,7 @@ def build_graph(retriever):
 
         return {
             **state,
+            "documents": documents,
             "generation": generation_with_sources,
             "last_step_time": time.time()
         }

@@ -598,11 +598,24 @@ async def qa_chat_stream(chat_id: str, message: ChatMessage):
                 retrieval_time = time.time() - retrieval_start
                 print(f"Retrieved {len(docs)} documents in {retrieval_time:.3f}s")
 
-                documents_text = ""
                 for i, doc in enumerate(docs):
-                    documents_text += doc.page_content
                     print(f"  Doc {i+1}: {len(doc.page_content)} chars from {doc.metadata.get('file_name', 'Unknown')}")
 
+                # Relevance gate - retrieval always returns its top-k nearest
+                # neighbors even when none of them are actually relevant (a
+                # "hello" greeting still matches *something* in a homework
+                # PDF). Each retrieved chunk is checked individually rather
+                # than all at once - see filter_relevant_documents - and
+                # only the chunks that pass reach the generator and the
+                # sources shown below.
+                if docs:
+                    from llm_prompts import get_relevance_checker
+                    from qa_workflow import filter_relevant_documents
+                    relevance_start = time.time()
+                    docs = filter_relevant_documents(message.content, docs, get_relevance_checker())
+                    print(f"Relevance check: {len(docs)} chunk(s) kept (took {time.time() - relevance_start:.3f}s)")
+
+                documents_text = "".join(doc.page_content for doc in docs)
                 print(f"Total document context: {len(documents_text)} characters")
 
                 # Stream the LLM response directly

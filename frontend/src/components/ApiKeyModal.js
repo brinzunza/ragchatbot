@@ -3,18 +3,29 @@ import axios from 'axios';
 import { API_BASE } from '../App';
 import { CloseIcon } from './Icons';
 
+const CLOUD = [
+  { id: 'openai', name: 'OpenAI', placeholder: 'sk-...' },
+  { id: 'anthropic', name: 'Claude', placeholder: 'sk-ant-...' },
+];
+
 function ApiKeyModal({ onClose, onChanged }) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [apiKey, setApiKey] = useState('');
-  const [showKey, setShowKey] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [removing, setRemoving] = useState(false);
+  const [drafts, setDrafts] = useState({ openai: '', anthropic: '' });
+  const [shown, setShown] = useState({});
+  const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    fetchStatus();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    (async () => {
+      try {
+        const response = await axios.get(`${API_BASE}/settings/api-key`);
+        setStatus(response.data);
+      } catch (err) {
+        setError('failed to load api key status');
+      }
+      setLoading(false);
+    })();
   }, []);
 
   useEffect(() => {
@@ -25,51 +36,46 @@ function ApiKeyModal({ onClose, onChanged }) {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
-  const fetchStatus = async () => {
-    setLoading(true);
+  // Runs one settings change; the backend answers with the new status.
+  const run = async (label, request, fallbackError, after) => {
+    setBusy(label);
+    setError(null);
     try {
-      const response = await axios.get(`${API_BASE}/settings/api-key`);
+      const response = await request();
       setStatus(response.data);
+      if (after) after();
+      onChanged();
     } catch (err) {
-      setError('failed to load api key status');
+      setError(err.response?.data?.detail || fallbackError);
     }
-    setLoading(false);
+    setBusy(null);
   };
 
-  const handleSave = async (e) => {
+  const saveKey = (e, provider) => {
     e.preventDefault();
-    if (!apiKey.trim() || saving) return;
-    setSaving(true);
-    setError(null);
-    try {
-      const response = await axios.post(`${API_BASE}/settings/api-key`, { api_key: apiKey.trim() });
-      setStatus(response.data);
-      setApiKey('');
-      onChanged();
-    } catch (err) {
-      setError(err.response?.data?.detail || 'failed to save api key');
-    }
-    setSaving(false);
+    const key = drafts[provider].trim();
+    if (!key || busy) return;
+    run(`save-${provider}`,
+      () => axios.post(`${API_BASE}/settings/api-key`, { api_key: key, provider }),
+      'failed to save api key',
+      () => setDrafts((prev) => ({ ...prev, [provider]: '' })));
   };
 
-  const handleRemove = async () => {
-    setRemoving(true);
-    setError(null);
-    try {
-      const response = await axios.delete(`${API_BASE}/settings/api-key`);
-      setStatus(response.data);
-      onChanged();
-    } catch (err) {
-      setError(err.response?.data?.detail || 'failed to remove api key');
-    }
-    setRemoving(false);
-  };
+  const removeKey = (provider) => run(`remove-${provider}`,
+    () => axios.delete(`${API_BASE}/settings/api-key`, { params: { provider } }),
+    'failed to remove api key');
+
+  const switchProvider = (provider) => run(`use-${provider}`,
+    () => axios.post(`${API_BASE}/settings/provider`, { provider }),
+    'failed to switch provider');
+
+  const active = status?.provider_id;
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>openai api key</h2>
+          <h2>ai provider</h2>
           <button className="modal-close" onClick={onClose} aria-label="close">
             <CloseIcon />
           </button>
@@ -80,63 +86,80 @@ function ApiKeyModal({ onClose, onChanged }) {
 
           {!loading && status && (
             <div className="api-key-status">
-              {status.has_key ? (
-                <>
-                  <span className={`status-dot active`} />
-                  using OpenAI ({status.model}) — key <code>{status.masked_key}</code>
-                </>
-              ) : (
-                <>
-                  <span className="status-dot" />
-                  no key set — using local Ollama ({status.model})
-                </>
-              )}
+              <span className={`status-dot ${status.has_key ? 'active' : ''}`} />
+              using {status.provider} ({status.model})
             </div>
           )}
 
-          <form onSubmit={handleSave}>
-            <label className="field-label" htmlFor="api-key-input">
-              {status?.has_key ? 'replace key' : 'add a key'}
-            </label>
-            <div className="api-key-input-row">
-              <input
-                id="api-key-input"
-                type={showKey ? 'text' : 'password'}
-                className="field-input"
-                placeholder="sk-..."
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                autoFocus
-                autoComplete="off"
-                spellCheck={false}
-              />
-              <button
-                type="button"
-                className="api-key-toggle"
-                onClick={() => setShowKey((v) => !v)}
-                aria-label={showKey ? 'hide key' : 'show key'}
-              >
-                {showKey ? 'hide' : 'show'}
-              </button>
+          {status && CLOUD.map(({ id, name, placeholder }) => {
+            const info = status.providers?.[id] || { has_key: false, masked_key: null, model: '' };
+            return (
+              <form key={id} className="provider-card" onSubmit={(e) => saveKey(e, id)}>
+                <div className="provider-head">
+                  <span className="provider-name">{name}</span>
+                  <span className="provider-model">{info.model}</span>
+                  {active === id ? (
+                    <span className="provider-active">in use</span>
+                  ) : info.has_key && (
+                    <button type="button" className="provider-use" disabled={!!busy} onClick={() => switchProvider(id)}>
+                      use
+                    </button>
+                  )}
+                </div>
+
+                {info.has_key && (
+                  <div className="provider-key">
+                    key <code>{`${info.masked_key.slice(0, 4)}…${info.masked_key.slice(-4)}`}</code>
+                    <button type="button" className="provider-remove" disabled={!!busy} onClick={() => removeKey(id)}>
+                      {busy === `remove-${id}` ? 'removing...' : 'remove'}
+                    </button>
+                  </div>
+                )}
+
+                <div className="api-key-input-row">
+                  <input
+                    type={shown[id] ? 'text' : 'password'}
+                    className="field-input"
+                    placeholder={info.has_key ? `replace key (${placeholder})` : `${name} api key (${placeholder})`}
+                    aria-label={`${name} api key`}
+                    value={drafts[id]}
+                    onChange={(e) => setDrafts((prev) => ({ ...prev, [id]: e.target.value }))}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <button
+                    type="button"
+                    className="api-key-toggle"
+                    onClick={() => setShown((prev) => ({ ...prev, [id]: !prev[id] }))}
+                    aria-label={shown[id] ? 'hide key' : 'show key'}
+                  >
+                    {shown[id] ? 'hide' : 'show'}
+                  </button>
+                  <button type="submit" className="provider-use" disabled={!drafts[id].trim() || !!busy}>
+                    {busy === `save-${id}` ? 'saving...' : 'save'}
+                  </button>
+                </div>
+              </form>
+            );
+          })}
+
+          {status && (
+            <div className="provider-card">
+              <div className="provider-head">
+                <span className="provider-name">Ollama</span>
+                <span className="provider-model">{status.providers.ollama?.model || 'llama3.2:latest'} · local, free, private</span>
+                {active === 'ollama' ? (
+                  <span className="provider-active">in use</span>
+                ) : (
+                  <button type="button" className="provider-use" disabled={!!busy} onClick={() => switchProvider('ollama')}>
+                    use
+                  </button>
+                )}
+              </div>
             </div>
-
-            {error && <div className="field-error">{error}</div>}
-
-            <button type="submit" className="primary-action" disabled={!apiKey.trim() || saving}>
-              {saving ? 'saving...' : 'save key'}
-            </button>
-          </form>
-
-          {status?.has_key && (
-            <button
-              type="button"
-              className="api-key-remove"
-              onClick={handleRemove}
-              disabled={removing}
-            >
-              {removing ? 'removing...' : 'remove key and use local Ollama instead'}
-            </button>
           )}
+
+          {error && <div className="field-error">{error}</div>}
         </div>
       </div>
     </div>

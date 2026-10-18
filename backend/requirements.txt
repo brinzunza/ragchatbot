@@ -21,3 +21,6 @@ requests
 langchain-ollama
 nomic[local]
 uvicorn
+httpx
+ddgs
+langchain-anthropic

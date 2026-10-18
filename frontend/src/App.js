@@ -10,6 +10,8 @@ import DocumentLibraryModal from './components/DocumentLibraryModal';
 import DocumentViewerModal from './components/DocumentViewerModal';
 import NewChatModal from './components/NewChatModal';
 import ApiKeyModal from './components/ApiKeyModal';
+import ContextModal from './components/ContextModal';
+import AgentModal from './components/AgentModal';
 import InfoPage from './components/InfoPage';
 import SetupPage from './components/SetupPage';
 import { UploadCloudIcon } from './components/Icons';
@@ -20,6 +22,88 @@ const EMPTY_DB_STATUS = { exists: false, file_count: 0 };
 const EMPTY_MESSAGES = [];
 const EMPTY_UPLOAD_QUEUE = [];
 const EMPTY_EXPANDED_SOURCES = {};
+
+// Turns whatever a failed request threw into a message the user can act on,
+// plus the backend's error code when it sent one (the UI uses it to offer a
+// shortcut to the settings).
+function readApiError(error) {
+  const lostConnection =
+    (error instanceof TypeError && /fetch|network|load failed/i.test(error.message)) ||
+    error.message === 'Network Error';
+  if (lostConnection) {
+    return { message: "couldn't reach the server. make sure the backend is running.", code: 'unreachable' };
+  }
+  const detail = error.response?.data?.detail;
+  if (detail && typeof detail === 'object') return { message: detail.message, code: detail.code };
+  return { message: (typeof detail === 'string' && detail) || error.message, code: error.errorCode };
+}
+
+const CONTEXT_USAGE = 'usage: /context (view and edit) · /compact [focus] · /forget <topic> · /context keep only info on <topic> · /context clear';
+
+// "remove all context about john", "forget john", "drop anything on the budget"
+const FORGET_PATTERN = /^(?:remove|forget|delete|drop|erase)\s+(?:all\s+|any\s+|everything\s+)?(?:(?:the\s+)?(?:context|info(?:rmation)?|memory|anything|mentions?|things?)\s+)?(?:about|on|regarding|of|related to)?\s*(.+)$/i;
+
+// Parses a context slash command - /context ..., plus the shorthands
+// /compact [focus] and /forget <topic>; returns null for ordinary messages.
+function parseContextCommand(text) {
+  const match = text.trim().match(/^\/(context|compact|forget)(?:\s+(.*))?$/i);
+  if (!match) return null;
+  const name = match[1].toLowerCase();
+  const args = (match[2] || '').trim();
+
+  if (name === 'forget') {
+    return args ? { type: 'forget', topic: args } : { type: 'unknown' };
+  }
+  if (name === 'compact') {
+    // "/compact remove all context about john" means what it says
+    const forget = args.match(FORGET_PATTERN);
+    if (forget) return { type: 'forget', topic: forget[1].trim() };
+    return { type: 'compact', focus: args.replace(/^(?:focus(?:ing)?\s+on|keep(?:ing)?)\s+/i, '') };
+  }
+
+  const rest = args;
+  if (rest === '') return { type: 'open' };
+  if (/^clear$/i.test(rest)) return { type: 'clear' };
+  const compact = rest.match(/^compact(?:\s+(.*))?$/i);
+  if (compact) {
+    const focusArgs = (compact[1] || '').trim();
+    const forgetFocus = focusArgs.match(FORGET_PATTERN);
+    return forgetFocus
+      ? { type: 'forget', topic: forgetFocus[1].trim() }
+      : { type: 'compact', focus: focusArgs };
+  }
+  const forget = rest.match(FORGET_PATTERN);
+  if (forget) return { type: 'forget', topic: forget[1].trim() };
+  // "keep only info on X", "keep info about X", "keep X"
+  const keep = rest.match(/^keep\s+(?:only\s+)?(?:info(?:rmation)?\s+)?(?:on\s+|about\s+)?(.+)$/i);
+  if (keep && !/^(only|info|information|on|about)$/i.test(keep[1].trim())) {
+    return { type: 'keep', topic: keep[1].trim() };
+  }
+  return { type: 'unknown' };
+}
+
+const RESEARCH_USAGE = 'usage: /research <topic> · athena plans the topic, investigates it with your documents and the web in the background, and writes a report';
+
+// Parses a "/research ..." slash command; returns null for ordinary messages.
+function parseResearchCommand(text) {
+  const match = text.trim().match(/^\/research(?:\s+(.*))?$/i);
+  return match ? { topic: (match[1] || '').trim() } : null;
+}
+
+// Steps still marked in-progress when a message is saved never finished
+// (cancelled, or the page was left); store them as stopped so a reload
+// doesn't show them working forever.
+function settleSteps(message) {
+  if (!message.steps) return message;
+  return {
+    ...message,
+    steps: message.steps.map((step) => ({
+      ...step,
+      status: step.status === 'running' ? 'stopped' : step.status,
+      permission: step.permission?.state === 'pending' ? { ...step.permission, state: 'expired' } : step.permission,
+    })),
+  };
+}
 
 function App() {
   const [chats, setChats] = useState([]);
@@ -40,6 +124,9 @@ function App() {
   const [viewingSource, setViewingSource] = useState(null);
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [showContext, setShowContext] = useState(false);
+  const [showAgent, setShowAgent] = useState(false);
+  const [chatConfig, setChatConfig] = useState(null);
   const [apiKeyStatus, setApiKeyStatus] = useState(null);
   const [view, setView] = useState('chat'); // 'chat' | 'info' | 'setup'
 
@@ -54,6 +141,18 @@ function App() {
   const dbStatus = dbStatusByChat[activeChatId] || EMPTY_DB_STATUS;
   const expandedSources = expandedSourcesByChat[activeChatId] || EMPTY_EXPANDED_SOURCES;
 
+  // The active chat's config decides whether chatting needs documents (the
+  // agent can answer without them) and what the input says.
+  useEffect(() => {
+    setChatConfig(null);
+    if (!activeChatId) return undefined;
+    let stale = false;
+    axios.get(`${API_BASE}/chats/${activeChatId}/config`)
+      .then(response => { if (!stale) setChatConfig(response.data); })
+      .catch(error => console.error('failed to load chat config:', error));
+    return () => { stale = true; };
+  }, [activeChatId]);
+
   const updateMessages = (chatId, updater) => {
     setMessagesByChat(prev => ({
       ...prev,
@@ -65,7 +164,7 @@ function App() {
   // finishing, not each streamed chunk) - strips the transient `streaming`
   // flag so a reload never resumes into a stuck in-progress bubble.
   const persistMessages = (chatId, messages) => {
-    const toSave = messages.map(({ streaming, ...rest }) => rest);
+    const toSave = messages.map(({ streaming, ...rest }) => settleSteps(rest));
     axios.put(`${API_BASE}/chats/${chatId}/messages`, { messages: toSave })
       .catch(error => console.error('failed to persist messages:', error));
   };
@@ -160,6 +259,7 @@ function App() {
   const switchChat = (chatId) => {
     setActiveChatId(chatId);
     setShowLibrary(false);
+    setShowContext(false);
     setViewingSource(null);
     setView('chat');
     checkStatuses(chatId);
@@ -246,8 +346,8 @@ function App() {
         }
         updateMessages(chatId, prev => {
           const next = [...prev, {
-            role: 'system',
-            content: `Upload failed: ${status.message}`
+            role: 'error',
+            content: `upload failed: ${status.message}`
           }];
           persistMessages(chatId, next);
           return next;
@@ -319,14 +419,118 @@ function App() {
 
     } catch (error) {
       updateUploadQueue(chatId, prev => prev.filter(u => u.uploadId !== tempId));
+      const { message: failure } = readApiError(error);
       updateMessages(chatId, prev => {
         const next = [...prev, {
-          role: 'system',
-          content: `Upload failed: ${error.response?.data?.detail || error.message}`
+          role: 'error',
+          content: `upload failed: ${failure}`
         }];
         persistMessages(chatId, next);
         return next;
       });
+    }
+  };
+
+  // Runs a /context slash command. These never reach the model or the
+  // context itself: the command is echoed as a user message, and the
+  // outcome comes back as a system message.
+  const runContextCommand = async (chatId, command, rawInput) => {
+    if (command.type === 'open') {
+      setShowContext(true);
+      setInput('');
+      return;
+    }
+
+    updateMessages(chatId, prev => [...prev, { role: 'user', content: rawInput.trim() }]);
+    setChatLoading(chatId, true);
+    setInput('');
+
+    let result;
+    let failure = null;
+    try {
+      if (command.type === 'compact') {
+        const { data } = await axios.post(`${API_BASE}/chats/${chatId}/context/compact`, { focus: command.focus || '' });
+        result = data.before === 0
+          ? 'context is already empty'
+          : `context compacted: ${data.before} ${data.before === 1 ? 'entry' : 'entries'} → ${data.after}`;
+      } else if (command.type === 'keep') {
+        const { data } = await axios.post(`${API_BASE}/chats/${chatId}/context/keep`, { topic: command.topic });
+        if (data.before === 0) {
+          result = 'context is already empty';
+        } else if (data.kept === 0) {
+          result = `nothing in the context was about "${command.topic}", so it is now empty`;
+        } else {
+          result = `context narrowed to "${command.topic}": ${data.before} ${data.before === 1 ? 'entry' : 'entries'} → ${data.after}`;
+        }
+      } else if (command.type === 'forget') {
+        const { data } = await axios.post(`${API_BASE}/chats/${chatId}/context/forget`, { topic: command.topic });
+        if (data.before === 0) {
+          result = 'context is already empty';
+        } else if (data.removed === 0) {
+          result = `nothing in the context was about "${command.topic}"`;
+        } else {
+          result = `removed what the context said about "${command.topic}": ${data.before} ${data.before === 1 ? 'entry' : 'entries'} → ${data.after}`;
+        }
+      } else if (command.type === 'clear') {
+        await axios.delete(`${API_BASE}/chats/${chatId}/context`);
+        result = 'context cleared';
+      } else {
+        result = CONTEXT_USAGE;
+      }
+    } catch (error) {
+      failure = readApiError(error);
+    }
+
+    updateMessages(chatId, prev => {
+      const next = [...prev, failure
+        ? { role: 'error', content: failure.message, code: failure.code }
+        : { role: 'system', content: result }];
+      persistMessages(chatId, next);
+      return next;
+    });
+    setChatLoading(chatId, false);
+  };
+
+  const runResearchCommand = async (chatId, command, rawInput) => {
+    updateMessages(chatId, prev => [...prev, { role: 'user', content: rawInput.trim() }]);
+    setInput('');
+
+    let added;
+    if (!command.topic) {
+      added = { role: 'system', content: RESEARCH_USAGE };
+    } else {
+      try {
+        const { data } = await axios.post(`${API_BASE}/chats/${chatId}/research`, { topic: command.topic });
+        added = { role: 'research', research_id: data.id, topic: data.topic, content: '' };
+      } catch (error) {
+        added = { role: 'error', content: readApiError(error).message };
+      }
+    }
+    updateMessages(chatId, prev => {
+      const next = [...prev, added];
+      persistMessages(chatId, next);
+      return next;
+    });
+  };
+
+  // The user's answer to "athena wants to run this code"
+  const handlePermission = async (stepId, requestId, approve) => {
+    const chatId = activeChatId;
+    const setState = (state) => updateMessages(chatId, prev => prev.map(message => (
+      message.steps ? {
+        ...message,
+        steps: message.steps.map(step => (
+          step.id === stepId && step.permission?.id === requestId
+            ? { ...step, permission: { ...step.permission, state } }
+            : step
+        )),
+      } : message
+    )));
+    setState(approve ? 'approved' : 'denied');
+    try {
+      await axios.post(`${API_BASE}/chats/${chatId}/agent/permissions/${requestId}`, { approve });
+    } catch (error) {
+      setState('expired');
     }
   };
 
@@ -335,7 +539,18 @@ function App() {
     const chatId = activeChatId;
     if (!chatId || !input.trim() || loadingByChat[chatId]) return;
 
-    const priorMessages = messagesByChat[chatId] || [];
+    const command = parseContextCommand(input);
+    if (command) {
+      await runContextCommand(chatId, command, input);
+      return;
+    }
+
+    const research = parseResearchCommand(input);
+    if (research) {
+      await runResearchCommand(chatId, research, input);
+      return;
+    }
+
     const currentInput = input;
 
     const userMessage = { role: 'user', content: currentInput };
@@ -359,102 +574,114 @@ function App() {
     abortControllersRef.current[chatId] = controller;
 
     try {
-      const conversationHistory = priorMessages
-        .filter(msg => msg.role !== 'system')
-        .slice(-6) // Last 3 Q&A pairs
-        .reduce((acc, msg, index, arr) => {
-          if (msg.role === 'user' && arr[index + 1]?.role === 'assistant') {
-            acc.push([msg.content, arr[index + 1].content]);
-          }
-          return acc;
-        }, []);
-
+      // The server owns each chat's conversation context (editable via
+      // /context), so only the new message is sent.
       const response = await fetch(`${API_BASE}/chats/${chatId}/qa/chat/stream`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          content: currentInput,
-          conversation_history: conversationHistory
-        }),
+        body: JSON.stringify({ content: currentInput }),
         signal: controller.signal
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        let detail;
+        try { detail = (await response.json()).detail; } catch (_) { /* no readable body */ }
+        throw new Error(typeof detail === 'string' && detail ? detail : `the server returned an error (${response.status})`);
       }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let accumulatedContent = '';
+      let completed = false;
+      let buffer = '';
 
-      while (true) {
+      // Updates the reply bubble that's currently streaming in
+      const patchReply = (patch) => updateMessages(chatId, prev => {
+        const last = prev[prev.length - 1];
+        if (!last || last.role !== 'assistant' || !last.streaming) return prev;
+        const next = [...prev];
+        next[next.length - 1] = typeof patch === 'function' ? patch(last) : { ...last, ...patch };
+        return next;
+      });
+      const patchStep = (stepId, patch) => patchReply(message => ({
+        ...message,
+        steps: (message.steps || []).map(step => (step.id === stepId ? { ...step, ...patch } : step)),
+      }));
+
+      const handleEvent = (data) => {
+        if (data.type === 'chunk' && data.content) {
+          accumulatedContent += data.content;
+          patchReply({ content: accumulatedContent });
+        } else if (data.type === 'reset') {
+          // What streamed so far was the agent thinking aloud before using a
+          // tool, not the answer
+          accumulatedContent = '';
+          patchReply({ content: '' });
+        } else if (data.type === 'step') {
+          patchReply(message => ({
+            ...message,
+            steps: [...(message.steps || []), {
+              id: data.id, tool: data.tool, args: data.args, thought: data.thought, status: 'running'
+            }],
+          }));
+        } else if (data.type === 'step_result') {
+          patchStep(data.id, { status: data.status, result: data.result });
+        } else if (data.type === 'permission_request') {
+          patchStep(data.step, { permission: { id: data.id, code: data.code, state: 'pending' } });
+        } else if (data.type === 'notice') {
+          patchReply({ notice: data.message });
+        } else if (data.type === 'sources' && data.content) {
+          patchReply({ sources: data.content });
+        } else if (data.type === 'complete') {
+          completed = true;
+          updateMessages(chatId, prev => {
+            const newMessages = [...prev];
+            const lastMessage = newMessages[newMessages.length - 1];
+            if (lastMessage.role === 'assistant' && lastMessage.streaming) {
+              newMessages[newMessages.length - 1] = {
+                ...lastMessage,
+                streaming: false,
+                response_time: data.response_time,
+                content: accumulatedContent,
+              };
+            }
+            persistMessages(chatId, newMessages);
+            return newMessages;
+          });
+        } else if (data.type === 'error') {
+          throw Object.assign(new Error(data.message), { errorCode: data.code });
+        }
+      };
+
+      while (!completed) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
+        // A network chunk can end mid-line; hold the unfinished tail until
+        // the rest of it arrives.
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
 
         for (const line of lines) {
-          if (line.startsWith('data: ') && line.trim().length > 6) {
-            try {
-              const jsonStr = line.slice(6).trim();
-              if (!jsonStr) continue;
-
-              const data = JSON.parse(jsonStr);
-
-              if (data.type === 'chunk' && data.content) {
-                accumulatedContent += data.content;
-
-                updateMessages(chatId, prev => {
-                  const newMessages = [...prev];
-                  const lastMessage = newMessages[newMessages.length - 1];
-                  if (lastMessage.role === 'assistant' && lastMessage.streaming) {
-                    newMessages[newMessages.length - 1] = {
-                      ...lastMessage,
-                      content: accumulatedContent
-                    };
-                  }
-                  return newMessages;
-                });
-              } else if (data.type === 'sources' && data.content) {
-                updateMessages(chatId, prev => {
-                  const newMessages = [...prev];
-                  const lastMessage = newMessages[newMessages.length - 1];
-                  if (lastMessage.role === 'assistant' && lastMessage.streaming) {
-                    newMessages[newMessages.length - 1] = {
-                      ...lastMessage,
-                      sources: data.content
-                    };
-                  }
-                  return newMessages;
-                });
-              } else if (data.type === 'complete') {
-                updateMessages(chatId, prev => {
-                  const newMessages = [...prev];
-                  const lastMessage = newMessages[newMessages.length - 1];
-                  if (lastMessage.role === 'assistant' && lastMessage.streaming) {
-                    newMessages[newMessages.length - 1] = {
-                      ...lastMessage,
-                      streaming: false,
-                      response_time: data.response_time,
-                      content: accumulatedContent,
-                      sources: lastMessage.sources
-                    };
-                  }
-                  persistMessages(chatId, newMessages);
-                  return newMessages;
-                });
-                break;
-              } else if (data.type === 'error') {
-                throw new Error(data.message);
-              }
-            } catch (parseError) {
-              console.warn('Failed to parse SSE data:', line, parseError);
-            }
+          if (!line.startsWith('data: ') || line.trim().length <= 6) continue;
+          let data;
+          try {
+            data = JSON.parse(line.slice(6));
+          } catch (parseError) {
+            console.warn('Failed to parse SSE data:', line, parseError);
+            continue;
           }
+          // Not inside the try: the error event throws, and has to reach the
+          // outer handler or the reply bubble is left blinking forever.
+          handleEvent(data);
+          if (completed) break;
         }
+      }
+      if (!completed) {
+        throw new Error('the response ended before it finished. please try again.');
       }
     } catch (error) {
       if (error.name === 'AbortError') {
@@ -464,18 +691,17 @@ function App() {
           const newMessages = [...prev];
           const lastMessage = newMessages[newMessages.length - 1];
           if (lastMessage?.role === 'assistant' && lastMessage.streaming) {
-            newMessages[newMessages.length - 1] = { ...lastMessage, streaming: false };
+            newMessages[newMessages.length - 1] = settleSteps({ ...lastMessage, streaming: false });
           }
           persistMessages(chatId, newMessages);
           return newMessages;
         });
       } else {
+        const { message: failure, code } = readApiError(error);
         updateMessages(chatId, prev => {
+          // Drop the empty bubble the reply was streaming into
           const newMessages = prev.slice(0, -1);
-          const next = [...newMessages, {
-            role: 'assistant',
-            content: `Error: ${error.message}`
-          }];
+          const next = [...newMessages, { role: 'error', content: failure, code }];
           persistMessages(chatId, next);
           return next;
         });
@@ -496,6 +722,10 @@ function App() {
     if (!activeChatId) return;
     updateMessages(activeChatId, []);
     persistMessages(activeChatId, []);
+    // The model's context is what it remembers of this conversation, so
+    // clearing the conversation clears that too.
+    axios.delete(`${API_BASE}/chats/${activeChatId}/context`)
+      .catch(error => console.error('failed to clear context:', error));
   };
 
   const resetDatabase = async () => {
@@ -522,10 +752,10 @@ function App() {
       refreshChats();
     } catch (error) {
       const errorMsg = error.code === 'ECONNABORTED'
-        ? 'Reset timed out - please try again'
-        : `Reset failed: ${error.response?.data?.detail || error.message}`;
+        ? 'reset timed out - please try again'
+        : `reset failed: ${readApiError(error).message}`;
       updateMessages(chatId, prev => {
-        const next = [...prev, { role: 'system', content: errorMsg }];
+        const next = [...prev, { role: 'error', content: errorMsg }];
         persistMessages(chatId, next);
         return next;
       });
@@ -541,12 +771,17 @@ function App() {
     }));
   };
 
-  const canChat = !!activeChatId && dbStatus.exists;
+  const agentEnabled = !!chatConfig?.agent_enabled;
+  const canChat = !!activeChatId && (dbStatus.exists || agentEnabled);
 
   const renderChatView = () => (
     <>
       <div className="title">document q&amp;a</div>
-      <div className="subtitle">ask questions grounded in your uploaded pdfs</div>
+      <div className="subtitle">
+        {agentEnabled
+          ? 'ask anything · athena searches your documents and the web, calculates and runs code'
+          : 'ask questions grounded in your uploaded pdfs'}
+      </div>
 
       {!chatsLoaded ? null : !activeChatId ? (
         <div className="empty-state">
@@ -574,10 +809,13 @@ function App() {
           <UploadDropzone onFiles={handleFileUpload} disabled={loading} compact={canChat} />
           <UploadQueue uploadQueue={uploadQueue} />
           <MessageList
+            chatId={activeChatId}
+            onDecidePermission={handlePermission}
             messages={messages}
             expandedSources={expandedSources}
             onToggleSources={toggleSources}
             onViewSource={setViewingSource}
+            onOpenSettings={() => setShowApiKeyModal(true)}
             messagesEndRef={messagesEndRef}
           />
           <ChatInput
@@ -587,6 +825,7 @@ function App() {
             onCancel={handleCancelResponse}
             canChat={canChat}
             loading={loading}
+            agentEnabled={agentEnabled}
           />
           {loading && !messages[messages.length - 1]?.streaming && (
             <div className="loading">working...</div>
@@ -608,6 +847,8 @@ function App() {
           onClearChat={clearChat}
           onResetDatabase={resetDatabase}
           onOpenLibrary={() => setShowLibrary(true)}
+          onOpenContext={() => setShowContext(true)}
+          onOpenAgent={() => setShowAgent(true)}
           onOpenApiKey={() => setShowApiKeyModal(true)}
           apiKeyStatus={apiKeyStatus}
           view={view}
@@ -637,6 +878,21 @@ function App() {
             chatId={activeChatId}
             onClose={() => setShowLibrary(false)}
             onDocumentDeleted={() => { checkStatuses(activeChatId); refreshChats(); }}
+          />
+        )}
+
+        {showAgent && activeChatId && (
+          <AgentModal
+            chatId={activeChatId}
+            onChanged={setChatConfig}
+            onClose={() => setShowAgent(false)}
+          />
+        )}
+
+        {showContext && activeChatId && (
+          <ContextModal
+            chatId={activeChatId}
+            onClose={() => setShowContext(false)}
           />
         )}
 

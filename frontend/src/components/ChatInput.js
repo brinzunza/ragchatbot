@@ -1,7 +1,7 @@
 import React from 'react';
 import { SendIcon, StopIcon } from './Icons';
 
-function ChatInput({ input, setInput, onSubmit, onCancel, canChat, loading }) {
+function ChatInput({ input, setInput, onSubmit, onCancel, canChat, loading, agentEnabled }) {
   return (
     <form onSubmit={onSubmit} className="chat-form">
       <div className="chat-input-wrap">
@@ -9,7 +9,7 @@ function ChatInput({ input, setInput, onSubmit, onCancel, canChat, loading }) {
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder={canChat ? 'ask about your documents...' : 'upload pdf files first'}
+          placeholder={canChat ? (agentEnabled ? 'ask anything...' : 'ask about your documents...') : 'upload pdf files first'}
           disabled={!canChat || loading}
           className="chat-input"
         />
@@ -23,6 +23,11 @@ function ChatInput({ input, setInput, onSubmit, onCancel, canChat, loading }) {
           </button>
         )}
       </div>
+      {input.startsWith('/') && (
+        <div className="command-hint">
+          <code>/context</code> view and edit · <code>/compact</code> · <code>/forget &lt;topic&gt;</code> · <code>/context keep only info on …</code> · <code>/context clear</code> · <code>/research &lt;topic&gt;</code>
+        </div>
+      )}
     </form>
   );
 }

@@ -9,6 +9,8 @@ function Sidebar({
   onClearChat,
   onResetDatabase,
   onOpenLibrary,
+  onOpenContext,
+  onOpenAgent,
   onOpenApiKey,
   apiKeyStatus,
   view,
@@ -57,6 +59,12 @@ function Sidebar({
 
           <div className="sidebar-section">
             <div className="sidebar-label">session</div>
+            <button onClick={onOpenAgent} className="nav-item">
+              agent
+            </button>
+            <button onClick={onOpenContext} className="nav-item">
+              context
+            </button>
             <button onClick={onClearChat} className="nav-item" disabled={loading}>
               clear chat
             </button>
@@ -100,10 +108,10 @@ function Sidebar({
         <button onClick={onOpenApiKey} className="nav-item">
           {apiKeyStatus && (
             <span className="nav-item-badge">
-              {apiKeyStatus.has_key ? 'OpenAI' : 'Ollama'}
+              {apiKeyStatus.provider}
             </span>
           )}
-          api key
+          ai provider
         </button>
       </div>
     </div>

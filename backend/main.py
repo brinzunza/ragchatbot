@@ -1,8 +1,8 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
-from typing import List, Optional, Dict
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Literal
 import os
 import shutil
 import time
@@ -18,6 +18,10 @@ from pdf_converter import pdf_to_markdown
 from document_processor import get_retriever, index_documents, list_documents, delete_document, has_documents, clear_vectorstore_cache
 from qa_workflow import build_graph as build_qa_graph
 import chat_manager
+import context_manager
+import agent_tools
+import research
+from agent import run_agent
 import llm_config
 
 app = FastAPI(title="AI Assistant API", version="1.0.0")
@@ -40,7 +44,24 @@ upload_progress: Dict[str, Dict] = {}
 # Pydantic models for request/response
 class ChatMessage(BaseModel):
     content: str
+    # Ignored: the server owns each chat's conversation context (see
+    # context_manager), which the user can edit. Kept only so older clients
+    # that still send it don't fail validation.
     conversation_history: Optional[List[tuple]] = []
+
+class KeepContextRequest(BaseModel):
+    topic: str
+
+class CompactContextRequest(BaseModel):
+    focus: str = ""
+
+class ChatConfig(BaseModel):
+    context_enabled: bool = True
+    max_context_entries: int = Field(default=4, ge=1, le=20)
+    agent_enabled: bool = True
+    permission_mode: Literal["safe", "ask", "bypass"] = "ask"
+    max_agent_steps: int = Field(default=8, ge=1, le=20)
+    web_search_enabled: bool = True
 
 class ChatResponse(BaseModel):
     content: str
@@ -84,13 +105,21 @@ class CreateChatRequest(BaseModel):
     copy_from: Optional[str] = None
 
 class ApiKeyStatus(BaseModel):
+    # has_key / masked_key describe the provider currently answering; the
+    # `providers` map has every cloud provider's own key state.
     has_key: bool
     masked_key: Optional[str] = None
     provider: str
+    provider_id: str
     model: str
+    providers: Dict[str, Dict] = {}
 
 class SetApiKeyRequest(BaseModel):
     api_key: str
+    provider: Literal["openai", "anthropic"] = "openai"
+
+class SetProviderRequest(BaseModel):
+    provider: Literal["openai", "anthropic", "ollama"]
 
 class SaveMessagesRequest(BaseModel):
     messages: List[Dict]
@@ -116,6 +145,31 @@ def resolve_chat_paths(chat_id: str):
         return chat_manager.get_chat_paths(chat_id)
     except ValueError:
         raise HTTPException(status_code=404, detail=f"chat not found: {chat_id}")
+
+def classify_llm_error(error: Exception):
+    """
+    Sort an LLM provider failure into a code the UI can act on, plus a
+    plain-language message. Codes: no_credits, invalid_key,
+    ollama_unreachable, error (anything else, with the raw text).
+    """
+    text = str(error)
+    lowered = text.lower()
+    provider = llm_config.get_model_info()["provider"]
+    if ("insufficient_quota" in lowered or "no credits" in lowered or "exceeded your current quota" in lowered
+            or "credit balance is too low" in lowered):
+        return "no_credits", (f"your {provider} account has no credits left. add credits, or switch to another "
+                              "provider (or local Ollama) in settings.")
+    if ("invalid_api_key" in lowered or "incorrect api key" in lowered
+            or "invalid x-api-key" in lowered or "authentication_error" in lowered):
+        return "invalid_key", (f"{provider} rejected the API key. update it in settings, or switch to another "
+                               "provider (or local Ollama).")
+    if "failed to connect to ollama" in lowered or "connection refused" in lowered:
+        return "ollama_unreachable", "can't reach Ollama. start it, or add an API key in settings."
+    return "error", text
+
+def describe_llm_error(error: Exception) -> str:
+    """Just the plain-language message from classify_llm_error"""
+    return classify_llm_error(error)[1]
 
 def process_documents_background(upload_id: str, file_paths: List[str], chroma_db_path: str, files_path: str):
     """Background task to process uploaded documents"""
@@ -234,37 +288,59 @@ async def health_check():
 
 # --- Settings (global, shared across all chats) ---
 
+def api_key_status() -> ApiKeyStatus:
+    info = llm_config.get_model_info()
+    return ApiKeyStatus(
+        has_key=info["location"] == "cloud",
+        masked_key=llm_config.get_masked_api_key(),
+        providers=llm_config.get_providers_status(),
+        **{k: v for k, v in info.items() if k != "location"},
+    )
+
 @app.get("/settings/api-key")
 async def get_api_key_status():
-    """Report whether an OpenAI key is set and which provider is active"""
-    info = llm_config.get_model_info()
-    masked = llm_config.get_masked_api_key()
-    return ApiKeyStatus(has_key=masked is not None, masked_key=masked, **info)
+    """Report which provider is active and each cloud provider's key state"""
+    return api_key_status()
 
 @app.post("/settings/api-key")
 async def set_api_key(request: SetApiKeyRequest):
-    """Set (or replace) the OpenAI API key, applied immediately without a restart"""
+    """Set (or replace) a provider's API key and switch to it, applied immediately without a restart"""
     key = request.api_key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="api_key cannot be empty")
+    # The two providers' keys are easy to paste into the wrong box
+    if request.provider == "anthropic" and not key.startswith("sk-ant-"):
+        raise HTTPException(status_code=400, detail="that doesn't look like a Claude key. they start with sk-ant-")
+    if request.provider == "openai" and key.startswith("sk-ant-"):
+        raise HTTPException(status_code=400, detail="that's a Claude key. add it under Claude instead")
     try:
-        llm_config.set_api_key(key)
+        llm_config.set_api_key(key, request.provider)
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"failed to save api key: {str(e)}")
-    info = llm_config.get_model_info()
-    return ApiKeyStatus(has_key=True, masked_key=llm_config.get_masked_api_key(), **info)
+    return api_key_status()
 
 @app.delete("/settings/api-key")
-async def remove_api_key():
-    """Remove the OpenAI key, falling back to local Ollama immediately"""
+async def remove_api_key(provider: Optional[Literal["openai", "anthropic"]] = None):
+    """Remove a provider's key (the active one by default); another provider with a key, or local Ollama, takes over immediately"""
     try:
-        llm_config.clear_api_key()
+        llm_config.clear_api_key(provider)
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"failed to remove api key: {str(e)}")
-    info = llm_config.get_model_info()
-    return ApiKeyStatus(has_key=False, masked_key=None, **info)
+    return api_key_status()
+
+@app.post("/settings/provider")
+async def set_provider(request: SetProviderRequest):
+    """Choose which provider answers: OpenAI, Claude, or local Ollama (keys are kept either way)"""
+    try:
+        llm_config.set_active_provider(request.provider)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"failed to switch provider: {str(e)}")
+    return api_key_status()
 
 
 # --- Chat management ---
@@ -330,6 +406,87 @@ async def save_messages(chat_id: str, request: SaveMessagesRequest):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"failed to save messages: {str(e)}")
+
+
+# --- Per-chat conversation context & configuration ---
+
+@app.get("/chats/{chat_id}/context")
+def read_context(chat_id: str):
+    """A chat's context entries and its configuration"""
+    resolve_chat_paths(chat_id)
+    return {
+        "entries": chat_manager.get_context(chat_id),
+        "config": chat_manager.get_config(chat_id),
+    }
+
+@app.delete("/chats/{chat_id}/context/{entry_id}")
+def delete_context_entry(chat_id: str, entry_id: str):
+    """Remove one entry from a chat's context"""
+    resolve_chat_paths(chat_id)
+    if not context_manager.delete_entry(chat_id, entry_id):
+        raise HTTPException(status_code=404, detail=f"context entry not found: {entry_id}")
+    return StatusResponse(status="success", message="context entry deleted")
+
+@app.delete("/chats/{chat_id}/context")
+def clear_context(chat_id: str):
+    """Remove every entry from a chat's context"""
+    resolve_chat_paths(chat_id)
+    context_manager.clear(chat_id)
+    return StatusResponse(status="success", message="context cleared")
+
+@app.post("/chats/{chat_id}/context/compact")
+def compact_context(chat_id: str, request: Optional[CompactContextRequest] = None):
+    """Replace a chat's context with a single summary of it, optionally focused on something"""
+    resolve_chat_paths(chat_id)
+    try:
+        result = context_manager.compact(chat_id, request.focus if request else "")
+    except Exception as e:
+        traceback.print_exc()
+        code, message_text = classify_llm_error(e)
+        raise HTTPException(status_code=500, detail={"message": f"failed to compact context: {message_text}", "code": code})
+    return {**result, "entries": chat_manager.get_context(chat_id)}
+
+@app.post("/chats/{chat_id}/context/keep")
+def keep_context(chat_id: str, request: KeepContextRequest):
+    """Narrow a chat's context to what concerns one topic"""
+    resolve_chat_paths(chat_id)
+    topic = request.topic.strip()
+    if not topic:
+        raise HTTPException(status_code=400, detail="topic is required")
+    try:
+        result = context_manager.keep_only(chat_id, topic)
+    except Exception as e:
+        traceback.print_exc()
+        code, message_text = classify_llm_error(e)
+        raise HTTPException(status_code=500, detail={"message": f"failed to narrow context: {message_text}", "code": code})
+    return {**result, "entries": chat_manager.get_context(chat_id)}
+
+@app.post("/chats/{chat_id}/context/forget")
+def forget_context(chat_id: str, request: KeepContextRequest):
+    """Drop whatever in a chat's context concerns one topic"""
+    resolve_chat_paths(chat_id)
+    topic = request.topic.strip()
+    if not topic:
+        raise HTTPException(status_code=400, detail="topic is required")
+    try:
+        result = context_manager.forget(chat_id, topic)
+    except Exception as e:
+        traceback.print_exc()
+        code, message_text = classify_llm_error(e)
+        raise HTTPException(status_code=500, detail={"message": f"failed to remove from context: {message_text}", "code": code})
+    return {**result, "entries": chat_manager.get_context(chat_id)}
+
+@app.get("/chats/{chat_id}/config")
+def read_chat_config(chat_id: str):
+    """A chat's configuration"""
+    resolve_chat_paths(chat_id)
+    return chat_manager.get_config(chat_id)
+
+@app.put("/chats/{chat_id}/config")
+def write_chat_config(chat_id: str, config: ChatConfig):
+    """Update a chat's configuration"""
+    resolve_chat_paths(chat_id)
+    return chat_manager.save_config(chat_id, config.dict())
 
 
 # --- Per-chat document database ---
@@ -493,7 +650,8 @@ async def qa_chat(chat_id: str, message: ChatMessage):
     try:
         print(f"\n=== QA CHAT REQUEST START ===")
         print(f"Question: {message.content}")
-        print(f"Conversation History: {len(message.conversation_history)} messages")
+        history = context_manager.build_history(chat_id)
+        print(f"Context: {len(history)} entries sent to the model")
 
         if not has_documents(chroma_db_path):
             print(f"ERROR: no documents indexed at {chroma_db_path}")
@@ -512,7 +670,7 @@ async def qa_chat(chat_id: str, message: ChatMessage):
 
         inputs = {
             "question": message.content,
-            "conversation_history": message.conversation_history
+            "conversation_history": history
         }
         print(f"Graph inputs prepared: {inputs}")
 
@@ -538,6 +696,12 @@ async def qa_chat(chat_id: str, message: ChatMessage):
             full_response = final_state.get("generation", "")
             print(f"Response extracted (length: {len(full_response)} chars)")
 
+        if full_response:
+            # The graph appends a "Sources:" block to the answer; keep it out of the stored context
+            answer_text = full_response.split("\n\nSources:")[0].strip()
+            if answer_text:
+                context_manager.record_turn(chat_id, message.content, answer_text)
+
         if not full_response:
             full_response = "i couldn't generate a response. please try rephrasing your question."
             print("WARNING: No response generated, using fallback message")
@@ -557,128 +721,156 @@ async def qa_chat(chat_id: str, message: ChatMessage):
     except Exception as e:
         print(f"ERROR in qa_chat: {str(e)}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"chat processing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"chat processing failed: {describe_llm_error(e)}")
+
+def sse(event: dict) -> str:
+    return f"data: {json.dumps(event)}\n\n"
+
+
+def classic_events(chat_id: str, question: str, history, chroma_db_path: str):
+    """
+    The classic pipeline as a stream of event dicts: retrieve, relevance-gate
+    each chunk, then generate. Used when the agent is switched off or the
+    model can't call tools. With no documents indexed it just chats.
+    """
+    start_time = time.time()
+    docs = []
+    if has_documents(chroma_db_path):
+        docs = get_retriever(chroma_db_path, top_k=3).invoke(question)
+        print(f"Retrieved {len(docs)} documents")
+
+    # Relevance gate - retrieval always returns its top-k nearest neighbors
+    # even when none of them are actually relevant (a "hello" greeting still
+    # matches *something* in a homework PDF). Each retrieved chunk is checked
+    # individually rather than all at once - see filter_relevant_documents -
+    # and only the chunks that pass reach the generator and the sources.
+    if docs:
+        from llm_prompts import get_relevance_checker
+        from qa_workflow import filter_relevant_documents
+        docs = filter_relevant_documents(question, docs, get_relevance_checker())
+        print(f"Relevance check: {len(docs)} chunk(s) kept")
+
+    documents_text = "".join(doc.page_content for doc in docs)
+
+    from llm_prompts import get_generator
+    response_content = ""
+    for chunk in get_generator().stream({
+        "conversation_history": history,
+        "document": documents_text,
+        "question": question
+    }):
+        if chunk:
+            response_content += chunk
+            yield {"content": chunk, "type": "chunk"}
+
+    # Only a fully finished answer joins the context; a response the user
+    # cancels never gets here. A failure to save shouldn't cost the user the
+    # answer they just watched stream in.
+    if response_content.strip():
+        try:
+            context_manager.record_turn(chat_id, question, response_content)
+        except Exception as e:
+            print(f"WARNING: failed to record context: {e}")
+
+    # One entry per retrieved chunk (not deduplicated by file) so the frontend
+    # can cite and highlight every chunk that contributed to the answer
+    from qa_workflow import get_sources_metadata
+    sources = get_sources_metadata(docs)
+    if sources:
+        yield {"content": sources, "type": "sources"}
+
+    yield {"type": "complete", "response_time": time.time() - start_time}
+
 
 @app.post("/chats/{chat_id}/qa/chat/stream")
 async def qa_chat_stream(chat_id: str, message: ChatMessage):
-    """Process Q&A chat message with streaming response"""
+    """Process a chat message, streaming the response as server-sent events"""
     chroma_db_path, _ = resolve_chat_paths(chat_id)
-    try:
-        print(f"\n=== STREAMING CHAT REQUEST START ===")
-        print(f"Question: {message.content}")
-        print(f"Conversation History: {len(message.conversation_history)} messages")
+    config = chat_manager.get_config(chat_id)
+    use_agent = config["agent_enabled"]
+    if not use_agent and not has_documents(chroma_db_path):
+        raise HTTPException(status_code=400, detail="no database found. upload documents first.")
 
-        if not has_documents(chroma_db_path):
-            print(f"ERROR: no documents indexed at {chroma_db_path}")
-            raise HTTPException(status_code=400, detail="no database found. upload documents first.")
+    print(f"\n=== CHAT REQUEST ({'agent' if use_agent else 'classic'}): {message.content}")
+    history = context_manager.build_history(chat_id)
 
-        # Build QA graph with retriever
-        print("Building QA graph and retriever for streaming...")
-        setup_start = time.time()
-        retriever = get_retriever(chroma_db_path, top_k=3)
-        app_graph = build_qa_graph(retriever)
-        setup_time = time.time() - setup_start
-        print(f"QA graph built in {setup_time:.3f}s")
+    # A plain (sync) generator: Starlette iterates it in a worker thread, so
+    # model calls, tools and waits for the user's approval never block the
+    # server's event loop.
+    def event_stream():
+        try:
+            if use_agent:
+                fell_back = False
+                for event in run_agent(chat_id, message.content, history, config):
+                    if event["type"] == "fallback":
+                        fell_back = True
+                        break
+                    yield sse(event)
+                if not fell_back:
+                    return
+                yield sse({"type": "notice", "message": "this model can't use tools, so Athena answered in classic mode."})
+            for event in classic_events(chat_id, message.content, history, chroma_db_path):
+                yield sse(event)
+        except Exception as e:
+            print(f"ERROR in chat stream: {str(e)}")
+            traceback.print_exc()
+            code, message_text = classify_llm_error(e)
+            yield sse({"type": "error", "message": message_text, "code": code})
 
-        inputs = {
-            "question": message.content,
-            "conversation_history": message.conversation_history
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/event-stream"
         }
-        print(f"Stream inputs prepared: {inputs}")
+    )
 
-        async def generate_stream():
-            try:
-                start_time = time.time()
-                print("Starting streaming response generation...")
 
-                # First get documents (retrieval phase)
-                print("Retrieving relevant documents...")
-                retrieval_start = time.time()
-                docs = retriever.invoke(message.content)
-                retrieval_time = time.time() - retrieval_start
-                print(f"Retrieved {len(docs)} documents in {retrieval_time:.3f}s")
+class ResearchRequest(BaseModel):
+    topic: str
 
-                for i, doc in enumerate(docs):
-                    print(f"  Doc {i+1}: {len(doc.page_content)} chars from {doc.metadata.get('file_name', 'Unknown')}")
 
-                # Relevance gate - retrieval always returns its top-k nearest
-                # neighbors even when none of them are actually relevant (a
-                # "hello" greeting still matches *something* in a homework
-                # PDF). Each retrieved chunk is checked individually rather
-                # than all at once - see filter_relevant_documents - and
-                # only the chunks that pass reach the generator and the
-                # sources shown below.
-                if docs:
-                    from llm_prompts import get_relevance_checker
-                    from qa_workflow import filter_relevant_documents
-                    relevance_start = time.time()
-                    docs = filter_relevant_documents(message.content, docs, get_relevance_checker())
-                    print(f"Relevance check: {len(docs)} chunk(s) kept (took {time.time() - relevance_start:.3f}s)")
+@app.post("/chats/{chat_id}/research")
+def start_research_job(chat_id: str, request: ResearchRequest):
+    """Start a background research job on a topic"""
+    resolve_chat_paths(chat_id)
+    try:
+        return research.start_research(chat_id, request.topic, classify_llm_error)
+    except ValueError as e:
+        raise HTTPException(status_code=409 if "already running" in str(e) else 400, detail=str(e))
 
-                documents_text = "".join(doc.page_content for doc in docs)
-                print(f"Total document context: {len(documents_text)} characters")
 
-                # Stream the LLM response directly
-                print("Starting LLM streaming...")
-                stream_start = time.time()
-                from llm_prompts import get_generator
-                stream_generator = get_generator().stream({
-                    "conversation_history": message.conversation_history,
-                    "document": documents_text,
-                    "question": message.content
-                })
+@app.get("/chats/{chat_id}/research/{job_id}")
+def read_research_job(chat_id: str, job_id: str):
+    """A research job's progress and, when finished, its report"""
+    resolve_chat_paths(chat_id)
+    job = research.get_job(chat_id, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="research job not found")
+    return job
 
-                response_content = ""
-                chunk_count = 0
-                for chunk in stream_generator:
-                    if chunk:
-                        chunk_count += 1
-                        response_content += chunk
-                        print(f"Streaming chunk {chunk_count}: '{chunk}' ({len(chunk)} chars)")
-                        # Send each chunk as it arrives
-                        yield f"data: {json.dumps({'content': chunk, 'type': 'chunk'})}\n\n"
 
-                stream_time = time.time() - stream_start
-                print(f"LLM streaming completed in {stream_time:.3f}s ({chunk_count} chunks)")
+@app.post("/chats/{chat_id}/research/{job_id}/cancel")
+def cancel_research_job(chat_id: str, job_id: str):
+    """Stop a running research job"""
+    resolve_chat_paths(chat_id)
+    if not research.cancel_job(chat_id, job_id):
+        raise HTTPException(status_code=404, detail="no running research job with that id")
+    return {"status": "success"}
 
-                # Add structured sources after the main content - one entry per
-                # retrieved chunk (not deduplicated by file) so the frontend can
-                # cite and highlight every chunk that contributed to the answer
-                print("Adding source information...")
-                from qa_workflow import get_sources_metadata
-                sources = get_sources_metadata(docs)
-                if sources:
-                    print(f"Source info: {sources}")
-                    yield f"data: {json.dumps({'content': sources, 'type': 'sources'})}\n\n"
 
-                # Send completion signal with total time
-                end_time = time.time()
-                response_time = end_time - start_time
-                print(f"Total streaming response time: {response_time:.3f}s")
-                print(f"Final response length: {len(response_content)} characters")
-                print("=== STREAMING CHAT REQUEST END ===\n")
-                yield f"data: {json.dumps({'type': 'complete', 'response_time': response_time})}\n\n"
+class PermissionDecision(BaseModel):
+    approve: bool
 
-            except Exception as e:
-                print(f"ERROR in streaming generator: {str(e)}")
-                traceback.print_exc()
-                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-
-        return StreamingResponse(
-            generate_stream(),
-            media_type="text/plain",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "Content-Type": "text/event-stream"
-            }
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"streaming chat failed: {str(e)}")
+@app.post("/chats/{chat_id}/agent/permissions/{request_id}")
+def decide_permission(chat_id: str, request_id: str, decision: PermissionDecision):
+    """Approve or deny a pending request from the agent (e.g. to run code)"""
+    resolve_chat_paths(chat_id)
+    if not agent_tools.resolve_permission_request(chat_id, request_id, decision.approve):
+        raise HTTPException(status_code=404, detail="that request has expired or was already answered")
+    return {"status": "success"}
 
 
 if __name__ == "__main__":

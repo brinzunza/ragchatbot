@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import threading
 import uuid
 from datetime import datetime
 from typing import List, Optional
@@ -20,6 +21,21 @@ def _meta_path(chat_id: str) -> str:
 
 def _messages_path(chat_id: str) -> str:
     return os.path.join(_chat_dir(chat_id), "messages.json")
+
+
+def _context_path(chat_id: str) -> str:
+    return os.path.join(_chat_dir(chat_id), "context.json")
+
+
+def _config_path(chat_id: str) -> str:
+    return os.path.join(_chat_dir(chat_id), "config.json")
+
+
+def get_workspace_path(chat_id: str) -> str:
+    """Absolute path of the chat's scratch folder for agent-run code (created on demand)."""
+    path = os.path.abspath(os.path.join(_chat_dir(chat_id), "workspace"))
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def chat_exists(chat_id: str) -> bool:
@@ -181,3 +197,114 @@ def delete_chat(chat_id: str) -> bool:
         return False
     shutil.rmtree(_chat_dir(chat_id))
     return True
+
+
+# --- Conversation context & per-chat configuration ---
+#
+# The context is what the model is shown of the conversation so far, kept
+# separate from messages.json (what the UI displays) so the user can prune,
+# compact, or narrow it without touching the visible chat history.
+#
+# Each entry is one of:
+#   {"id", "kind": "turn",    "question", "answer", "created_at"}
+#   {"id", "kind": "summary", "text",               "created_at"}
+# Compacting or narrowing the context folds entries into a single summary
+# entry, so there is at most one, and it's always first.
+
+DEFAULT_CONFIG = {
+    "context_enabled": True,
+    "max_context_entries": 4,
+    # Agent: lets the model decide which tools to use per message. When off
+    # (or when the model can't call tools) the classic retrieve -> generate
+    # pipeline answers instead.
+    "agent_enabled": True,
+    # safe: the agent can't run code. ask: each run needs the user's OK.
+    # bypass: code runs without asking.
+    "permission_mode": "ask",
+    "max_agent_steps": 8,
+    "web_search_enabled": True,
+}
+
+PERMISSION_MODES = ("safe", "ask", "bypass")
+
+# Serializes read-modify-write cycles on context.json: a streaming response
+# appending its turn can land at the same moment as a delete or compact.
+_context_lock = threading.Lock()
+
+
+def _write_json_atomic(path: str, data) -> None:
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    os.replace(tmp_path, path)
+
+
+def get_context(chat_id: str) -> List[dict]:
+    """
+    Load a chat's context entries, oldest first.
+
+    Raises:
+        ValueError: if the chat doesn't exist
+    """
+    if not chat_exists(chat_id):
+        raise ValueError(f"Chat not found: {chat_id}")
+    path = _context_path(chat_id)
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def update_context(chat_id: str, updater) -> List[dict]:
+    """
+    Atomically apply updater(entries) -> new_entries to a chat's context.
+
+    Args:
+        chat_id: The chat's id
+        updater: Callable taking the current entry list and returning the
+            list to save. Runs under a lock, so keep it quick - do slow
+            work (like LLM calls) before calling this, and have the updater
+            only splice the result into whatever is current.
+
+    Returns:
+        The saved entry list
+
+    Raises:
+        ValueError: if the chat doesn't exist
+    """
+    with _context_lock:
+        entries = get_context(chat_id)
+        new_entries = updater(entries)
+        _write_json_atomic(_context_path(chat_id), new_entries)
+        return new_entries
+
+
+def get_config(chat_id: str) -> dict:
+    """
+    Load a chat's configuration, with defaults filled in for anything unset.
+
+    Raises:
+        ValueError: if the chat doesn't exist
+    """
+    if not chat_exists(chat_id):
+        raise ValueError(f"Chat not found: {chat_id}")
+    config = dict(DEFAULT_CONFIG)
+    path = _config_path(chat_id)
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            config.update(json.load(f))
+    return config
+
+
+def save_config(chat_id: str, config: dict) -> dict:
+    """
+    Persist a chat's configuration. Only known keys are kept.
+
+    Raises:
+        ValueError: if the chat doesn't exist
+    """
+    if not chat_exists(chat_id):
+        raise ValueError(f"Chat not found: {chat_id}")
+    merged = {key: config.get(key, default) for key, default in DEFAULT_CONFIG.items()}
+    _write_json_atomic(_config_path(chat_id), merged)
+    return merged

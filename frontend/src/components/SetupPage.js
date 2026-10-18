@@ -31,16 +31,24 @@ function SetupPage({ apiKeyStatus, onOpenApiKey, onNewChat }) {
             <div className="docs-card-title">option A — OpenAI (cloud)</div>
             <ol className="docs-card-list">
               <li>create a key at <code>platform.openai.com/api-keys</code></li>
-              <li>open the API key settings below and paste it in</li>
+              <li>open the provider settings below and paste it under OpenAI</li>
             </ol>
             <p className="docs-card-note">faster and generally higher quality. requires an OpenAI account and usage costs money.</p>
           </div>
           <div className="docs-card">
-            <div className="docs-card-title">option B — Ollama (local)</div>
+            <div className="docs-card-title">option B — Claude (cloud)</div>
+            <ol className="docs-card-list">
+              <li>create a key at <code>console.anthropic.com</code></li>
+              <li>open the provider settings below and paste it under Claude</li>
+            </ol>
+            <p className="docs-card-note">strong at following instructions and using tools. requires an Anthropic account with credits; usage costs money.</p>
+          </div>
+          <div className="docs-card">
+            <div className="docs-card-title">option C — Ollama (local)</div>
             <ol className="docs-card-list">
               <li>install Ollama from <code>ollama.com</code></li>
               <li>run <code>ollama pull llama3.2</code> in a terminal</li>
-              <li>leave the API key empty — Athena detects this automatically</li>
+              <li>choose Ollama in the provider settings (or leave the API keys empty — Athena detects this automatically)</li>
             </ol>
             <p className="docs-card-note">free and fully private — nothing leaves your machine. slower and less capable than a cloud model.</p>
           </div>
@@ -48,7 +56,7 @@ function SetupPage({ apiKeyStatus, onOpenApiKey, onNewChat }) {
 
         <button className="nav-item primary-action docs-cta" onClick={onOpenApiKey}>
           <KeyIcon />
-          open API key settings
+          open provider settings
         </button>
       </section>
 

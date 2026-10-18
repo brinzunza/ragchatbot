@@ -11,7 +11,7 @@ const STEPS = [
 const FAQS = [
   {
     q: 'where does my data go?',
-    a: "Your documents always stay on this computer. When you ask a question, the relevant excerpts (not the whole document) are sent to whichever AI provider is currently active — OpenAI's servers if you've added an API key, or nowhere at all if you're using local Ollama, since that runs entirely on your machine.",
+    a: "Your documents always stay on this computer. When you ask a question, the relevant excerpts (not the whole document) are sent to whichever AI provider is currently active — OpenAI's or Anthropic's servers if you've added a key for one of them, or nowhere at all if you're using local Ollama, since that runs entirely on your machine. If Athena searches the web, the search words it chose go to a public search engine; you can switch web search off in the agent settings.",
   },
   {
     q: 'what file types can I upload?',
@@ -19,11 +19,27 @@ const FAQS = [
   },
   {
     q: "why did it say it couldn't find an answer?",
-    a: "Athena only answers from what's actually in your uploaded documents — it won't make something up just to sound helpful. If the documents don't cover it, it'll tell you rather than guess.",
+    a: "When a question is about your documents, Athena searches them and shows the passages it used. If they don't cover it, it will say what it couldn't find rather than guess — or look on the web if web search is on.",
   },
   {
-    q: 'do I need an OpenAI account?',
-    a: "No. Without an API key, Athena automatically falls back to a local model (Ollama) running on your own machine — free and private, though generally slower and less capable than a cloud model. Add a key any time from the API key button in the sidebar.",
+    q: 'do I need an OpenAI or Claude account?',
+    a: "No. Without an API key, Athena automatically falls back to a local model (Ollama) running on your own machine — free and private, though generally slower and less capable than a cloud model. Add an OpenAI or Claude key any time from the ai provider button in the sidebar, and switch between providers there without losing your keys.",
+  },
+  {
+    q: 'what can the agent do?',
+    a: "Athena decides for each message which tools it needs: searching and reading your documents, searching the web and reading pages, doing exact math, checking the date, and running Python for data analysis and coding. Each tool call shows up as a step above the answer that you can expand. It uses small talk and simple questions without any tools. Open the agent settings in the sidebar to turn it off (Athena then uses the classic search-then-answer flow) or to change how many tool calls it may make per message. Small local models are less reliable at picking tools than OpenAI or Claude models.",
+  },
+  {
+    q: 'is it safe to let it run code?',
+    a: "That's what the permission mode in the agent settings is for. Safe: Athena never runs code. Ask first (the default): it shows you the exact code and waits for you to allow it each time. Bypass: code runs without asking. Code runs in a separate process inside the chat's workspace folder, with a time limit, but it is not a sandbox — it can read files and use the network like any program you run. Only use bypass with a model and documents you trust.",
+  },
+  {
+    q: 'what is /research?',
+    a: "Type /research followed by a topic for a longer investigation. Athena breaks the topic into sub-questions, researches each with your documents and the web in the background, then writes a report. You can keep chatting, leave and come back, or cancel it. Background research only runs code if the chat is set to bypass.",
+  },
+  {
+    q: 'what is context, and can I edit it?',
+    a: "Context is what Athena remembers of your conversation so it can follow up on earlier questions. Open it from the sidebar (or type /context) to remove exchanges you don't want it to remember, or change how many recent exchanges it uses. Type /compact to boil it down to a short summary (add a focus, like /compact keep the budget details), /forget <topic> to remove everything about a topic (like /forget john), /context keep only info on <topic> to drop everything unrelated to a topic, or /context clear to start fresh.",
   },
   {
     q: "what's the difference between chats?",

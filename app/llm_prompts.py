@@ -253,7 +253,8 @@ agent_tool_hints = {
     "calculator": "calculator: exact arithmetic. Use it instead of doing math in your head.",
     "current_datetime": "current_datetime: today's date and time.",
     "run_python": "run_python: run Python (pandas and numpy are available) for data analysis, calculations too big "
-                  "for the calculator, and testing code. Print what you want to see.",
+                  "for the calculator, and testing code. Print what you want to see. Never use it to print, "
+                  "repeat or format text you already have - just write that text in your answer.",
     "compact_context": "compact_context / keep_only_context / forget_context: shrink, narrow or clear this "
                        "conversation's memory. Use them only when the user explicitly asks you to.",
     "remember": "remember: save a fact the user asks you to remember.",

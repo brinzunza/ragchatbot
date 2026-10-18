@@ -359,7 +359,16 @@ class ToolBox:
         name = (name or "").strip().strip("*\"' ")
         if not name or "/" in name or "\\" in name or ".." in name:
             return "error: invalid document name"
-        path = os.path.join(self.files_path, f"{name.removesuffix('.md')}.md")
+        # Models guess names ("resume.pdf", "Resume", "the document"): match
+        # loosely, and with a single document there's nothing to confuse.
+        names = self.document_names()
+        stem = name.removesuffix(".md").removesuffix(".pdf")
+        match = next((n for n in names if n.lower() == stem.lower()), None)
+        if match is None and len(names) == 1:
+            match = names[0]
+        if match is None:
+            return f"error: no document named {name!r}. use list_documents to see the names."
+        path = os.path.join(self.files_path, f"{match}.md")
         if not os.path.exists(path):
             return f"error: no document named {name!r}. use list_documents to see the names."
         with open(path, "r", encoding="utf-8") as f:

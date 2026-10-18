@@ -65,9 +65,26 @@ _SELF_STATEMENT = re.compile(
 )
 
 
-def skips_tools(text: str) -> bool:
-    """Messages that need no tools: small talk, or the user stating a fact about themselves."""
-    return is_small_talk(text) or (bool(_SELF_STATEMENT.match(text)) and "?" not in text)
+# Asking about something already said in the conversation ("repeat the bio you
+# wrote"). The answer is sitting in the context; a small model will still
+# reach for a tool - once it ran Python just to print the sentence back.
+_ABOUT_EARLIER_REPLY = re.compile(
+    r"\b(repeat|say (that|it) again|what did (you|i) (say|write|ask)|(you|i) (just |earlier |previously )?(wrote|said|told you|asked)|"
+    r"(the )?(last|previous|above|earlier) (answer|message|response|reply)|rephrase|reword|shorten (that|it)|"
+    r"make (it|that) (shorter|longer|simpler)|translate (that|it))\b",
+    re.IGNORECASE,
+)
+
+
+def skips_tools(text: str, has_history: bool = False) -> bool:
+    """
+    Messages that need no tools: small talk, the user stating a fact about
+    themselves, or (with earlier conversation to draw on) a request about
+    something already said.
+    """
+    if is_small_talk(text) or (bool(_SELF_STATEMENT.match(text)) and "?" not in text):
+        return True
+    return has_history and bool(_ABOUT_EARLIER_REPLY.search(text))
 
 
 def find_text_tool_call(text: str, tool_names) -> Optional[dict]:
@@ -266,7 +283,7 @@ def run_agent(chat_id: str, question: str, history: List[Tuple[str, str]], confi
 
     try:
         answer = yield from drive(agent_loop(messages, toolbox, config["max_agent_steps"],
-                                             use_tools=not skips_tools(question)))
+                                             use_tools=not skips_tools(question, bool(history))))
         if is_empty_answer(answer):
             # A glitch, not a reply. Ask once more for plain sentences, without tools.
             yield {"type": "reset"}

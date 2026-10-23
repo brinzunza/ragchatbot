@@ -214,6 +214,12 @@ def delete_chat(chat_id: str) -> bool:
 DEFAULT_CONFIG = {
     "context_enabled": True,
     "max_context_entries": 4,
+    # What is sent is capped by both: the most recent exchanges, up to this
+    # many tokens (estimated), whichever runs out first.
+    "max_context_tokens": 3000,
+    # Fold exchanges that fall out of the window into the summary instead of
+    # dropping them.
+    "auto_compact": False,
     # Agent: lets the model decide which tools to use per message. When off
     # (or when the model can't call tools) the classic retrieve -> generate
     # pipeline answers instead.

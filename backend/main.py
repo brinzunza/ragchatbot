@@ -52,12 +52,17 @@ class ChatMessage(BaseModel):
 class KeepContextRequest(BaseModel):
     topic: str
 
+class UndoTurnRequest(BaseModel):
+    question: str
+
 class CompactContextRequest(BaseModel):
     focus: str = ""
 
 class ChatConfig(BaseModel):
     context_enabled: bool = True
     max_context_entries: int = Field(default=4, ge=1, le=20)
+    max_context_tokens: int = Field(default=3000, ge=500, le=32000)
+    auto_compact: bool = False
     agent_enabled: bool = True
     permission_mode: Literal["safe", "ask", "bypass"] = "ask"
     max_agent_steps: int = Field(default=8, ge=1, le=20)
@@ -117,6 +122,9 @@ class ApiKeyStatus(BaseModel):
 class SetApiKeyRequest(BaseModel):
     api_key: str
     provider: Literal["openai", "anthropic"] = "openai"
+
+class SetOllamaModelRequest(BaseModel):
+    model: str
 
 class SetProviderRequest(BaseModel):
     provider: Literal["openai", "anthropic", "ollama"]
@@ -343,6 +351,29 @@ async def set_provider(request: SetProviderRequest):
     return api_key_status()
 
 
+@app.get("/settings/ollama-models")
+async def get_ollama_models():
+    """The chat models installed in local Ollama, and which one is selected"""
+    models = llm_config.list_ollama_models()
+    return {
+        "reachable": models is not None,
+        "models": models or [],
+        "selected": llm_config.get_providers_status()["ollama"]["model"],
+    }
+
+@app.post("/settings/ollama-model")
+async def set_ollama_model(request: SetOllamaModelRequest):
+    """Choose which installed Ollama model answers"""
+    try:
+        llm_config.set_ollama_model(request.model)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"failed to save model: {str(e)}")
+    return api_key_status()
+
+
 # --- Chat management ---
 
 @app.get("/chats")
@@ -417,7 +448,14 @@ def read_context(chat_id: str):
     return {
         "entries": chat_manager.get_context(chat_id),
         "config": chat_manager.get_config(chat_id),
+        "usage": context_manager.usage(chat_id),
     }
+
+@app.get("/chats/{chat_id}/context/usage")
+def read_context_usage(chat_id: str):
+    """How full a chat's context window is"""
+    resolve_chat_paths(chat_id)
+    return context_manager.usage(chat_id)
 
 @app.delete("/chats/{chat_id}/context/{entry_id}")
 def delete_context_entry(chat_id: str, entry_id: str):
@@ -444,7 +482,7 @@ def compact_context(chat_id: str, request: Optional[CompactContextRequest] = Non
         traceback.print_exc()
         code, message_text = classify_llm_error(e)
         raise HTTPException(status_code=500, detail={"message": f"failed to compact context: {message_text}", "code": code})
-    return {**result, "entries": chat_manager.get_context(chat_id)}
+    return {**result, "entries": chat_manager.get_context(chat_id), "usage": context_manager.usage(chat_id)}
 
 @app.post("/chats/{chat_id}/context/keep")
 def keep_context(chat_id: str, request: KeepContextRequest):
@@ -459,7 +497,25 @@ def keep_context(chat_id: str, request: KeepContextRequest):
         traceback.print_exc()
         code, message_text = classify_llm_error(e)
         raise HTTPException(status_code=500, detail={"message": f"failed to narrow context: {message_text}", "code": code})
-    return {**result, "entries": chat_manager.get_context(chat_id)}
+    return {**result, "entries": chat_manager.get_context(chat_id), "usage": context_manager.usage(chat_id)}
+
+@app.post("/chats/{chat_id}/context/fold")
+def fold_context(chat_id: str):
+    """Fold the exchanges that no longer fit the window into the summary"""
+    resolve_chat_paths(chat_id)
+    try:
+        result = context_manager.compact_overflow(chat_id)
+    except Exception as e:
+        traceback.print_exc()
+        code, message_text = classify_llm_error(e)
+        raise HTTPException(status_code=500, detail={"message": f"failed to summarize older context: {message_text}", "code": code})
+    return {**result, "entries": chat_manager.get_context(chat_id), "usage": context_manager.usage(chat_id)}
+
+@app.post("/chats/{chat_id}/context/undo")
+def undo_context_turn(chat_id: str, request: UndoTurnRequest):
+    """Forget the latest exchange when it answered `question` (for regenerate and edit)"""
+    resolve_chat_paths(chat_id)
+    return {"removed": context_manager.undo_turn(chat_id, request.question)}
 
 @app.post("/chats/{chat_id}/context/forget")
 def forget_context(chat_id: str, request: KeepContextRequest):
@@ -474,7 +530,7 @@ def forget_context(chat_id: str, request: KeepContextRequest):
         traceback.print_exc()
         code, message_text = classify_llm_error(e)
         raise HTTPException(status_code=500, detail={"message": f"failed to remove from context: {message_text}", "code": code})
-    return {**result, "entries": chat_manager.get_context(chat_id)}
+    return {**result, "entries": chat_manager.get_context(chat_id), "usage": context_manager.usage(chat_id)}
 
 @app.get("/chats/{chat_id}/config")
 def read_chat_config(chat_id: str):
@@ -779,6 +835,8 @@ def classic_events(chat_id: str, question: str, history, chroma_db_path: str):
     if sources:
         yield {"content": sources, "type": "sources"}
 
+    if context_manager.maybe_auto_compact(chat_id):
+        yield {"type": "notice", "message": "older messages were folded into the context summary."}
     yield {"type": "complete", "response_time": time.time() - start_time}
 
 
@@ -876,4 +934,4 @@ def decide_permission(chat_id: str, request_id: str, decision: PermissionDecisio
 if __name__ == "__main__":
     import uvicorn
     os.makedirs(chat_manager.CHATS_ROOT, exist_ok=True)
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)

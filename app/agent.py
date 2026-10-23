@@ -13,6 +13,7 @@ import json
 import re
 import time
 import uuid
+from datetime import datetime
 from typing import Iterator, List, Optional, Tuple
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -25,6 +26,11 @@ from qa_workflow import get_sources_metadata
 
 RESULT_PREVIEW_CHARS = 700
 MAX_PERMISSION_CODE_CHARS = 6000
+
+
+def today_string() -> str:
+    """Today's date as the model should read it, e.g. 'Friday, October 23, 2026'."""
+    return datetime.now().strftime("%A, %B %d, %Y").replace(" 0", " ")
 
 
 def is_tools_unsupported(error: Exception) -> bool:
@@ -74,6 +80,12 @@ _ABOUT_EARLIER_REPLY = re.compile(
     r"make (it|that) (shorter|longer|simpler)|translate (that|it))\b",
     re.IGNORECASE,
 )
+
+
+def stated_facts(history: List[Tuple[str, str]]) -> List[str]:
+    """What the user has said about themselves earlier in this conversation, word for word."""
+    return [question.strip() for question, _ in history
+            if _SELF_STATEMENT.match(question) and "?" not in question]
 
 
 def skips_tools(text: str, has_history: bool = False) -> bool:
@@ -138,6 +150,15 @@ def is_empty_answer(text: str) -> bool:
     return bool(_EMPTY_ANSWER.fullmatch(text))
 
 
+_TOOL_CALL_START = re.compile(r'^\s*(?:```(?:json)?\s*)?\{\s*"name"\s*:\s*"(\w+)"')
+
+
+def looks_like_tool_call(text: str, tool_names) -> bool:
+    """Text that starts out as a call to one of our tools - whether or not it is valid JSON."""
+    match = _TOOL_CALL_START.match(text)
+    return bool(match) and match.group(1) in tool_names
+
+
 def history_to_messages(history: List[Tuple[str, str]]) -> list:
     """Turn context_manager.build_history pairs into chat messages."""
     messages = []
@@ -169,6 +190,7 @@ def agent_loop(messages: list, toolbox: ToolBox, max_steps: int, include_context
     # Small models reach for the web first anyway, so enforce the order.
     docs_exist = toolbox.has_documents
     docs_searched = False
+    malformed_retries = 0
 
     while True:
         out_of_steps = steps_taken >= max_steps or not use_tools
@@ -196,6 +218,17 @@ def agent_loop(messages: list, toolbox: ToolBox, max_steps: int, include_context
                 tool_calls = [found["call"]]
                 turn_text = found["before"]
                 aggregate = AIMessage(content="", tool_calls=tool_calls)
+        if not tool_calls and not out_of_steps and malformed_retries < 2 and looks_like_tool_call(turn_text, tools_by_name):
+            # A tool call written out as text but not valid JSON - typically
+            # code with unescaped quotes inside a string. Showing it as the
+            # answer would be junk; ask the model to try again.
+            malformed_retries += 1
+            yield {"type": "reset"}
+            messages.append(AIMessage(content=turn_text))
+            messages.append(HumanMessage(content=(
+                "That tool call was not valid JSON (quotes inside strings must be escaped). Either call the "
+                "tool again with valid arguments, or just answer in plain sentences.")))
+            continue
         if not tool_calls:
             return turn_text
 
@@ -262,7 +295,15 @@ def run_agent(chat_id: str, question: str, history: List[Tuple[str, str]], confi
                  if names else "The user has not uploaded any documents to this chat.")
     offered = {tool.name for tool in toolbox.tools()}
     tool_lines = "\n".join(f"- {hint}" for name, hint in agent_tool_hints.items() if name in offered)
-    system_prompt = agent_system_prompt.replace("{tools}", "Tools:\n" + tool_lines) + f"\n\n{knowledge}"
+    system_prompt = (agent_system_prompt.replace("{tools}", "Tools:\n" + tool_lines).replace("{today}", today_string())
+                     + f"\n\n{knowledge}")
+    facts = stated_facts(history)
+    if facts:
+        # Pinned here, not left in the chat history: a document search result
+        # sits right next to the question and a model will trust it over an
+        # earlier message that says the opposite.
+        system_prompt += ("\n\nThe user has told you the following. It is true and overrides anything in the "
+                          "documents or the web:\n" + "\n".join(f"- {fact}" for fact in facts))
     messages = [SystemMessage(content=system_prompt)] + history_to_messages(history) + [HumanMessage(content=question)]
 
     steps = 0
@@ -312,4 +353,6 @@ def run_agent(chat_id: str, question: str, history: List[Tuple[str, str]], confi
         sources = get_sources_metadata(toolbox.retrieved_docs)
         if sources:
             yield {"type": "sources", "content": sources}
+    if answer.strip() and context_manager.maybe_auto_compact(chat_id):
+        yield {"type": "notice", "message": "older messages were folded into the context summary."}
     yield {"type": "complete", "response_time": time.time() - start, "steps": steps}

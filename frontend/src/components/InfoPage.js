@@ -34,12 +34,16 @@ const FAQS = [
     a: "That's what the permission mode in the agent settings is for. Safe: Athena never runs code. Ask first (the default): it shows you the exact code and waits for you to allow it each time. Bypass: code runs without asking. Code runs in a separate process inside the chat's workspace folder, with a time limit, but it is not a sandbox — it can read files and use the network like any program you run. Only use bypass with a model and documents you trust.",
   },
   {
+    q: 'can I redo or edit my last message?',
+    a: "Yes. Under the last reply, regenerate asks the same question again and copy puts the answer on your clipboard. Under your last message, edit puts the question back in the box. Either way the old answer is also forgotten from the context so it isn't counted twice. Replies are formatted (lists, tables, code), and a finished research report can be downloaded as a Markdown file.",
+  },
+  {
     q: 'what is /research?',
     a: "Type /research followed by a topic for a longer investigation. Athena breaks the topic into sub-questions, researches each with your documents and the web in the background, then writes a report. You can keep chatting, leave and come back, or cancel it. Background research only runs code if the chat is set to bypass.",
   },
   {
     q: 'what is context, and can I edit it?',
-    a: "Context is what Athena remembers of your conversation so it can follow up on earlier questions. Open it from the sidebar (or type /context) to remove exchanges you don't want it to remember, or change how many recent exchanges it uses. Type /compact to boil it down to a short summary (add a focus, like /compact keep the budget details), /forget <topic> to remove everything about a topic (like /forget john), /context keep only info on <topic> to drop everything unrelated to a topic, or /context clear to start fresh.",
+    a: "Context is what Athena remembers of your conversation so it can follow up on earlier questions. Open it from the sidebar (or type /context) to remove exchanges you don't want it to remember, or change how many recent exchanges it uses. Type /compact to boil it down to a short summary (add a focus, like /compact keep the budget details), /forget <topic> to remove everything about a topic (like /forget john), /context keep only info on <topic> to drop everything unrelated to a topic, or /context clear to start fresh. Each message sends the most recent exchanges that fit a token budget (about four characters per token); the sidebar shows how full that is, and exchanges that no longer fit can be kept as a summary, by hand or automatically.",
   },
   {
     q: "what's the difference between chats?",

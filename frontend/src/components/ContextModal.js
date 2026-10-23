@@ -5,15 +5,22 @@ import { CloseIcon, TrashIcon } from './Icons';
 
 const MIN_ENTRIES = 1;
 const MAX_ENTRIES = 20;
+const MIN_TOKENS = 500;
+const MAX_TOKENS = 32000;
+
+const formatTokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 
 function clip(text, limit) {
   return text.length <= limit ? text : `${text.slice(0, limit).trimEnd()}…`;
 }
 
-function ContextModal({ chatId, onClose }) {
+function ContextModal({ chatId, onClose, onChanged }) {
   const [entries, setEntries] = useState([]);
   const [config, setConfig] = useState(null);
   const [maxDraft, setMaxDraft] = useState('');
+  const [tokensDraft, setTokensDraft] = useState('');
+  const [usage, setUsage] = useState(null);
+  const [folding, setFolding] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [confirmingClear, setConfirmingClear] = useState(false);
@@ -27,6 +34,8 @@ function ContextModal({ chatId, onClose }) {
         setEntries(response.data.entries);
         setConfig(response.data.config);
         setMaxDraft(String(response.data.config.max_context_entries));
+        setTokensDraft(String(response.data.config.max_context_tokens));
+        setUsage(response.data.usage);
       } catch (err) {
         setError('failed to load context');
       }
@@ -42,6 +51,15 @@ function ContextModal({ chatId, onClose }) {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
+  // The window changes with the settings and with every edit, so the meter is refetched
+  const refreshUsage = async () => {
+    try {
+      const response = await axios.get(`${API_BASE}/chats/${chatId}/context/usage`);
+      setUsage(response.data);
+      onChanged?.();
+    } catch (err) { /* the meter just stays as it was */ }
+  };
+
   const updateConfig = async (patch) => {
     const previous = config;
     const next = { ...config, ...patch };
@@ -49,11 +67,37 @@ function ContextModal({ chatId, onClose }) {
     setError(null);
     try {
       await axios.put(`${API_BASE}/chats/${chatId}/config`, next);
+      refreshUsage();
     } catch (err) {
       setConfig(previous);
       setMaxDraft(String(previous.max_context_entries));
+      setTokensDraft(String(previous.max_context_tokens));
       setError('failed to save settings');
     }
+  };
+
+  const commitTokensDraft = () => {
+    const value = parseInt(tokensDraft, 10);
+    if (Number.isNaN(value) || value < MIN_TOKENS || value > MAX_TOKENS) {
+      setTokensDraft(String(config.max_context_tokens));
+      return;
+    }
+    if (value !== config.max_context_tokens) updateConfig({ max_context_tokens: value });
+  };
+
+  const foldOlder = async () => {
+    setFolding(true);
+    setError(null);
+    try {
+      const response = await axios.post(`${API_BASE}/chats/${chatId}/context/fold`);
+      setEntries(response.data.entries);
+      setUsage(response.data.usage);
+      onChanged?.();
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      setError(detail?.message || 'failed to summarize the older exchanges');
+    }
+    setFolding(false);
   };
 
   const commitMaxDraft = () => {
@@ -70,6 +114,7 @@ function ContextModal({ chatId, onClose }) {
     try {
       await axios.delete(`${API_BASE}/chats/${chatId}/context/${id}`);
       setEntries((prev) => prev.filter((entry) => entry.id !== id));
+      refreshUsage();
     } catch (err) {
       setError('failed to remove that entry');
     }
@@ -80,16 +125,17 @@ function ContextModal({ chatId, onClose }) {
     try {
       await axios.delete(`${API_BASE}/chats/${chatId}/context`);
       setEntries([]);
+      refreshUsage();
     } catch (err) {
       setError('failed to clear context');
     }
     setConfirmingClear(false);
   };
 
-  // Turns older than the window aren't sent to the model (the summary always is)
-  const turns = entries.filter((entry) => entry.kind === 'turn');
+  // What isn't in the window the server computed isn't sent to the model (the summary always is)
+  const sentIds = new Set(usage?.sent_ids || []);
   const outsideWindow = new Set(
-    config ? turns.slice(0, Math.max(0, turns.length - config.max_context_entries)).map((entry) => entry.id) : []
+    usage ? entries.filter((entry) => entry.kind === 'turn' && !sentIds.has(entry.id)).map((entry) => entry.id) : []
   );
 
   return (
@@ -116,7 +162,22 @@ function ContextModal({ chatId, onClose }) {
                 include context in answers
               </label>
               <label className="context-config-row">
-                recent exchanges sent to the model
+                token budget per message
+                <input
+                  type="number"
+                  className="context-number context-number-wide"
+                  min={MIN_TOKENS}
+                  max={MAX_TOKENS}
+                  step={500}
+                  value={tokensDraft}
+                  disabled={!config.context_enabled}
+                  onChange={(e) => setTokensDraft(e.target.value)}
+                  onBlur={commitTokensDraft}
+                  onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
+                />
+              </label>
+              <label className="context-config-row">
+                most recent exchanges sent
                 <input
                   type="number"
                   className="context-number"
@@ -129,6 +190,41 @@ function ContextModal({ chatId, onClose }) {
                   onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
                 />
               </label>
+              <label className="radio-row">
+                <input
+                  type="checkbox"
+                  checked={config.auto_compact}
+                  disabled={!config.context_enabled}
+                  onChange={(e) => updateConfig({ auto_compact: e.target.checked })}
+                />
+                fold older exchanges into the summary automatically
+              </label>
+            </div>
+          )}
+
+          {!loading && usage && usage.enabled && usage.total_exchanges > 0 && (
+            <div className="context-usage">
+              <div className="context-usage-line">
+                <span>
+                  sending {usage.sent_exchanges} of {usage.total_exchanges} {usage.total_exchanges === 1 ? 'exchange' : 'exchanges'}
+                  {' · '}~{formatTokens(usage.used_tokens)} of {formatTokens(usage.budget_tokens)} tokens
+                </span>
+                <span>{usage.percent}%</span>
+              </div>
+              <div className="context-meter" role="progressbar" aria-valuenow={usage.percent} aria-valuemin={0} aria-valuemax={100}>
+                <div
+                  className={`context-meter-fill ${usage.left_out > 0 || usage.percent >= 90 ? 'full' : ''}`}
+                  style={{ width: `${Math.min(100, usage.percent)}%` }}
+                />
+              </div>
+              {usage.left_out > 0 && (
+                <div className="context-usage-warning">
+                  {usage.left_out} older {usage.left_out === 1 ? 'exchange is' : 'exchanges are'} no longer sent to the model.
+                  <button type="button" className="error-action" onClick={foldOlder} disabled={folding}>
+                    {folding ? 'summarizing...' : 'keep them as a summary'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

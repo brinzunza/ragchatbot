@@ -1,24 +1,35 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { ChevronRightIcon, FileTextIcon } from './Icons';
 import AgentSteps from './AgentSteps';
 import ResearchCard from './ResearchCard';
-
-// Splits on **bold** spans (Knowledge-Base-sourced content, per the generator's system prompt)
-// and renders them as <strong>. Everything else renders as plain text.
-function renderContent(text) {
-  const parts = text.split(/(\*\*[^*]+?\*\*)/g);
-  return parts.map((part, i) => {
-    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
-      return <strong key={i}>{part.slice(2, -2)}</strong>;
-    }
-    return part;
-  });
-}
+import Markdown from './Markdown';
 
 // Error codes (from the backend) that the API key settings can fix
 const SETTINGS_ERROR_CODES = new Set(['no_credits', 'invalid_key', 'ollama_unreachable']);
 
-function Message({ chatId, message, expanded, onToggleSources, onViewSource, onOpenSettings, onDecidePermission }) {
+// Small text buttons under a message: copy, and (on the last exchange) redo it
+function MessageActions({ children }) {
+  return <div className="message-actions">{children}</div>;
+}
+
+function CopyButton({ text }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (error) {
+      console.error('copy failed:', error);
+    }
+  };
+  return <button type="button" className="message-action" onClick={copy}>{copied ? 'copied' : 'copy'}</button>;
+}
+
+function Message({
+  chatId, message, expanded, onToggleSources, onViewSource, onOpenSettings, onDecidePermission,
+  isLastReply, canRedo, onRegenerate, onEdit
+}) {
   const sources = message.sources || [];
 
   if (message.role === 'error') {
@@ -30,6 +41,11 @@ function Message({ chatId, message, expanded, onToggleSources, onViewSource, onO
           {onOpenSettings && SETTINGS_ERROR_CODES.has(message.code) && (
             <button type="button" className="error-action" onClick={onOpenSettings}>
               open provider settings
+            </button>
+          )}
+          {isLastReply && canRedo && (
+            <button type="button" className="error-action" onClick={onRegenerate}>
+              try again
             </button>
           )}
         </div>
@@ -47,6 +63,7 @@ function Message({ chatId, message, expanded, onToggleSources, onViewSource, onO
 
   const steps = message.role === 'assistant' ? message.steps || [] : [];
   const hasContent = message.content || !message.streaming || steps.length === 0;
+  const finished = message.role === 'assistant' && !message.streaming && message.content;
 
   return (
     <div className={`message ${message.role}`}>
@@ -55,11 +72,24 @@ function Message({ chatId, message, expanded, onToggleSources, onViewSource, onO
       )}
       {message.notice && <div className="message-notice">{message.notice}</div>}
       {hasContent && <div className={`message-content ${message.streaming ? 'streaming' : ''}`}>
-        {renderContent(message.content)}
+        {message.role === 'assistant' ? <Markdown>{message.content}</Markdown> : message.content}
         {message.response_time != null && (
           <div className="response-time">{message.response_time.toFixed(2)}s</div>
         )}
       </div>}
+      {finished && (
+        <MessageActions>
+          <CopyButton text={message.content} />
+          {isLastReply && canRedo && (
+            <button type="button" className="message-action" onClick={onRegenerate}>regenerate</button>
+          )}
+        </MessageActions>
+      )}
+      {message.role === 'user' && isLastReply && canRedo && (
+        <MessageActions>
+          <button type="button" className="message-action" onClick={onEdit}>edit</button>
+        </MessageActions>
+      )}
       {sources.length > 0 && message.role === 'assistant' && (
         <div className="sources-container">
           <button className="sources-toggle" onClick={onToggleSources}>

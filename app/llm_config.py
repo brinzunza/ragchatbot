@@ -176,6 +176,46 @@ def get_providers_status() -> dict:
     return status
 
 
+def _ollama_url() -> str:
+    host = (os.getenv("OLLAMA_HOST") or "http://localhost:11434").strip()
+    return host if host.startswith("http") else f"http://{host}"
+
+
+def list_ollama_models() -> list | None:
+    """
+    The chat models installed in Ollama, [{"name", "size_gb"}] smallest first,
+    or None if Ollama can't be reached. Embedding models are left out: they
+    can't answer questions, and this app uses one of them for search.
+    """
+    import httpx
+    try:
+        response = httpx.get(f"{_ollama_url()}/api/tags", timeout=3)
+        response.raise_for_status()
+        installed = response.json().get("models", [])
+    except (httpx.HTTPError, ValueError):
+        return None
+    models = [
+        {"name": m["name"], "size_gb": round(m.get("size", 0) / 1e9, 1)}
+        for m in installed if "embed" not in m["name"].lower()
+    ]
+    return sorted(models, key=lambda m: m["size_gb"])
+
+
+def set_ollama_model(name: str) -> None:
+    """
+    Choose which installed Ollama model answers (saved as OLLAMA_MODEL in .env).
+
+    Raises:
+        ValueError: if Ollama is unreachable or the model isn't installed
+    """
+    models = list_ollama_models()
+    if models is None:
+        raise ValueError("can't reach Ollama. start it first")
+    if name not in {m["name"] for m in models}:
+        raise ValueError(f"{name!r} isn't installed in Ollama. run: ollama pull {name}")
+    _write_env_value("OLLAMA_MODEL", name)
+
+
 def get_llm(temperature: float = 0, streaming: bool = True, **kwargs) -> BaseChatModel:
     """
     Get an LLM instance for the active provider (see get_active_provider).

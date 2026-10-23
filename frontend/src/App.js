@@ -15,6 +15,8 @@ import AgentModal from './components/AgentModal';
 import InfoPage from './components/InfoPage';
 import SetupPage from './components/SetupPage';
 import { UploadCloudIcon } from './components/Icons';
+import { CONTEXT_USAGE, RESEARCH_USAGE, parseContextCommand, parseResearchCommand } from './commands';
+import { canRedoLast, rewindLastExchange } from './chatHistory';
 
 export const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8000';
 
@@ -36,58 +38,6 @@ function readApiError(error) {
   const detail = error.response?.data?.detail;
   if (detail && typeof detail === 'object') return { message: detail.message, code: detail.code };
   return { message: (typeof detail === 'string' && detail) || error.message, code: error.errorCode };
-}
-
-const CONTEXT_USAGE = 'usage: /context (view and edit) · /compact [focus] · /forget <topic> · /context keep only info on <topic> · /context clear';
-
-// "remove all context about john", "forget john", "drop anything on the budget"
-const FORGET_PATTERN = /^(?:remove|forget|delete|drop|erase)\s+(?:all\s+|any\s+|everything\s+)?(?:(?:the\s+)?(?:context|info(?:rmation)?|memory|anything|mentions?|things?)\s+)?(?:about|on|regarding|of|related to)?\s*(.+)$/i;
-
-// Parses a context slash command - /context ..., plus the shorthands
-// /compact [focus] and /forget <topic>; returns null for ordinary messages.
-function parseContextCommand(text) {
-  const match = text.trim().match(/^\/(context|compact|forget)(?:\s+(.*))?$/i);
-  if (!match) return null;
-  const name = match[1].toLowerCase();
-  const args = (match[2] || '').trim();
-
-  if (name === 'forget') {
-    return args ? { type: 'forget', topic: args } : { type: 'unknown' };
-  }
-  if (name === 'compact') {
-    // "/compact remove all context about john" means what it says
-    const forget = args.match(FORGET_PATTERN);
-    if (forget) return { type: 'forget', topic: forget[1].trim() };
-    return { type: 'compact', focus: args.replace(/^(?:focus(?:ing)?\s+on|keep(?:ing)?)\s+/i, '') };
-  }
-
-  const rest = args;
-  if (rest === '') return { type: 'open' };
-  if (/^clear$/i.test(rest)) return { type: 'clear' };
-  const compact = rest.match(/^compact(?:\s+(.*))?$/i);
-  if (compact) {
-    const focusArgs = (compact[1] || '').trim();
-    const forgetFocus = focusArgs.match(FORGET_PATTERN);
-    return forgetFocus
-      ? { type: 'forget', topic: forgetFocus[1].trim() }
-      : { type: 'compact', focus: focusArgs };
-  }
-  const forget = rest.match(FORGET_PATTERN);
-  if (forget) return { type: 'forget', topic: forget[1].trim() };
-  // "keep only info on X", "keep info about X", "keep X"
-  const keep = rest.match(/^keep\s+(?:only\s+)?(?:info(?:rmation)?\s+)?(?:on\s+|about\s+)?(.+)$/i);
-  if (keep && !/^(only|info|information|on|about)$/i.test(keep[1].trim())) {
-    return { type: 'keep', topic: keep[1].trim() };
-  }
-  return { type: 'unknown' };
-}
-
-const RESEARCH_USAGE = 'usage: /research <topic> · athena plans the topic, investigates it with your documents and the web in the background, and writes a report';
-
-// Parses a "/research ..." slash command; returns null for ordinary messages.
-function parseResearchCommand(text) {
-  const match = text.trim().match(/^\/research(?:\s+(.*))?$/i);
-  return match ? { topic: (match[1] || '').trim() } : null;
 }
 
 // Steps still marked in-progress when a message is saved never finished
@@ -127,10 +77,10 @@ function App() {
   const [showContext, setShowContext] = useState(false);
   const [showAgent, setShowAgent] = useState(false);
   const [chatConfig, setChatConfig] = useState(null);
+  const [contextUsageByChat, setContextUsageByChat] = useState({});
   const [apiKeyStatus, setApiKeyStatus] = useState(null);
   const [view, setView] = useState('chat'); // 'chat' | 'info' | 'setup'
 
-  const messagesEndRef = useRef(null);
   const uploadIntervalsRef = useRef({});
   const abortControllersRef = useRef({});
   const loadedMessagesRef = useRef(new Set());
@@ -152,6 +102,21 @@ function App() {
       .catch(error => console.error('failed to load chat config:', error));
     return () => { stale = true; };
   }, [activeChatId]);
+
+  // How full the chat's context window is, for the sidebar badge
+  const refreshContextUsage = async (chatId) => {
+    if (!chatId) return;
+    try {
+      const response = await axios.get(`${API_BASE}/chats/${chatId}/context/usage`);
+      setContextUsageByChat(prev => ({ ...prev, [chatId]: response.data }));
+    } catch (error) {
+      console.error('failed to load context usage:', error);
+    }
+  };
+
+  useEffect(() => {
+    refreshContextUsage(activeChatId);
+  }, [activeChatId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const updateMessages = (chatId, updater) => {
     setMessagesByChat(prev => ({
@@ -229,11 +194,6 @@ function App() {
     refreshApiKeyStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Scroll to bottom when the active chat's messages change
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
 
   // Cleanup upload polling and in-flight chat requests on unmount
   useEffect(() => {
@@ -489,6 +449,7 @@ function App() {
       return next;
     });
     setChatLoading(chatId, false);
+    refreshContextUsage(chatId);
   };
 
   const runResearchCommand = async (chatId, command, rawInput) => {
@@ -534,24 +495,23 @@ function App() {
     }
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    const chatId = activeChatId;
-    if (!chatId || !input.trim() || loadingByChat[chatId]) return;
+  const sendMessage = async (chatId, text) => {
+    if (!chatId || !text.trim() || loadingByChat[chatId]) return;
 
-    const command = parseContextCommand(input);
+    const command = parseContextCommand(text);
     if (command) {
-      await runContextCommand(chatId, command, input);
+      await runContextCommand(chatId, command, text);
       return;
     }
 
-    const research = parseResearchCommand(input);
+    const research = parseResearchCommand(text);
     if (research) {
-      await runResearchCommand(chatId, research, input);
+      await runResearchCommand(chatId, research, text);
       return;
     }
 
-    const currentInput = input;
+    const currentInput = text;
+    setInput('');
 
     const userMessage = { role: 'user', content: currentInput };
     updateMessages(chatId, prev => {
@@ -710,7 +670,38 @@ function App() {
 
     delete abortControllersRef.current[chatId];
     setChatLoading(chatId, false);
-    if (chatId === activeChatId) setInput('');
+    refreshContextUsage(chatId);
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    return sendMessage(activeChatId, input);
+  };
+
+  // Rewinds to before the last question, then either asks it again
+  // ("regenerate") or puts it back in the box to change ("edit"). The model's
+  // memory of that exchange is dropped too, so the old answer isn't counted
+  // alongside the new one.
+  const redoLastExchange = async (mode) => {
+    const chatId = activeChatId;
+    if (!chatId || loadingByChat[chatId]) return;
+    const rewound = rewindLastExchange(messagesByChat[chatId] || []);
+    if (!rewound) return;
+
+    updateMessages(chatId, rewound.kept);
+    persistMessages(chatId, rewound.kept);
+    try {
+      await axios.post(`${API_BASE}/chats/${chatId}/context/undo`, { question: rewound.text });
+    } catch (error) {
+      console.error('failed to undo the remembered exchange:', error);
+    }
+
+    if (mode === 'edit') {
+      setInput(rewound.text);
+      setTimeout(() => document.querySelector('.chat-input')?.focus(), 0);
+      return;
+    }
+    await sendMessage(chatId, rewound.text);
   };
 
   const handleCancelResponse = () => {
@@ -816,7 +807,9 @@ function App() {
             onToggleSources={toggleSources}
             onViewSource={setViewingSource}
             onOpenSettings={() => setShowApiKeyModal(true)}
-            messagesEndRef={messagesEndRef}
+            canRedo={!loading && canRedoLast(messages)}
+            onRegenerate={() => redoLastExchange('regenerate')}
+            onEdit={() => redoLastExchange('edit')}
           />
           <ChatInput
             input={input}
@@ -848,6 +841,7 @@ function App() {
           onResetDatabase={resetDatabase}
           onOpenLibrary={() => setShowLibrary(true)}
           onOpenContext={() => setShowContext(true)}
+          contextUsage={contextUsageByChat[activeChatId]}
           onOpenAgent={() => setShowAgent(true)}
           onOpenApiKey={() => setShowApiKeyModal(true)}
           apiKeyStatus={apiKeyStatus}
@@ -892,6 +886,7 @@ function App() {
         {showContext && activeChatId && (
           <ContextModal
             chatId={activeChatId}
+            onChanged={() => refreshContextUsage(activeChatId)}
             onClose={() => setShowContext(false)}
           />
         )}

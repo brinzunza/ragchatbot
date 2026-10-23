@@ -19,7 +19,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 import chat_manager
 import context_manager
-from agent import agent_loop
+from agent import agent_loop, today_string
 from agent_tools import ToolBox
 from llm_prompts import agent_tool_hints, get_research_planner, get_research_writer, research_note_prompt
 
@@ -135,7 +135,7 @@ def _run(chat_id: str, job: dict, cancel: threading.Event, classify_error: Calla
         names = toolbox.document_names()
         offered = {tool.name for tool in toolbox.tools(include_context_tools=False)}
         tool_lines = "\n".join(f"- {hint}" for name, hint in agent_tool_hints.items() if name in offered)
-        system = f"{research_note_prompt}\n\nTools:\n{tool_lines}"
+        system = f"{research_note_prompt.replace('{today}', today_string())}\n\nTools:\n{tool_lines}"
         if names:
             system += "\n\nDocuments the user has uploaded: " + ", ".join(names)
 

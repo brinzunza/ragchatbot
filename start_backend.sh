@@ -20,6 +20,6 @@ cd ../
 pip install streamlit pandas chromadb "langchain-chroma==0.2.6" langchain langchain-community langchain-nomic
 
 # Start the FastAPI server
-echo "starting fastapi server on http://localhost:8000"
+echo "starting fastapi server on http://localhost:8000 (this machine only)"
 cd backend
-python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload

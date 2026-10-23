@@ -10,6 +10,7 @@ function Sidebar({
   onResetDatabase,
   onOpenLibrary,
   onOpenContext,
+  contextUsage,
   onOpenAgent,
   onOpenApiKey,
   apiKeyStatus,
@@ -63,6 +64,16 @@ function Sidebar({
               agent
             </button>
             <button onClick={onOpenContext} className="nav-item">
+              {contextUsage?.enabled && contextUsage.total_exchanges > 0 && (
+                <span
+                  className={`nav-item-badge ${contextUsage.left_out > 0 ? 'nav-item-badge-warn' : ''}`}
+                  title={contextUsage.left_out > 0
+                    ? `${contextUsage.left_out} older exchanges are no longer sent to the model`
+                    : 'how much of the context window each message uses'}
+                >
+                  {contextUsage.percent}%
+                </span>
+              )}
               context
             </button>
             <button onClick={onClearChat} className="nav-item" disabled={loading}>

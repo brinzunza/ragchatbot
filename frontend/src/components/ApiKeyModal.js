@@ -15,6 +15,7 @@ function ApiKeyModal({ onClose, onChanged }) {
   const [shown, setShown] = useState({});
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
+  const [ollamaModels, setOllamaModels] = useState([]);
 
   useEffect(() => {
     (async () => {
@@ -24,6 +25,10 @@ function ApiKeyModal({ onClose, onChanged }) {
       } catch (err) {
         setError('failed to load api key status');
       }
+      try {
+        const response = await axios.get(`${API_BASE}/settings/ollama-models`);
+        setOllamaModels(response.data.models);
+      } catch (err) { /* the picker just stays hidden */ }
       setLoading(false);
     })();
   }, []);
@@ -68,6 +73,10 @@ function ApiKeyModal({ onClose, onChanged }) {
   const switchProvider = (provider) => run(`use-${provider}`,
     () => axios.post(`${API_BASE}/settings/provider`, { provider }),
     'failed to switch provider');
+
+  const chooseOllamaModel = (model) => run(`model-${model}`,
+    () => axios.post(`${API_BASE}/settings/ollama-model`, { model }),
+    'failed to switch model');
 
   const active = status?.provider_id;
 
@@ -147,7 +156,24 @@ function ApiKeyModal({ onClose, onChanged }) {
             <div className="provider-card">
               <div className="provider-head">
                 <span className="provider-name">Ollama</span>
-                <span className="provider-model">{status.providers.ollama?.model || 'llama3.2:latest'} · local, free, private</span>
+                {ollamaModels.length > 0 ? (
+                  <select
+                    className="provider-select"
+                    aria-label="Ollama model"
+                    value={status.providers.ollama?.model || ''}
+                    disabled={!!busy}
+                    onChange={(e) => chooseOllamaModel(e.target.value)}
+                  >
+                    {!ollamaModels.some((m) => m.name === status.providers.ollama?.model) && (
+                      <option value={status.providers.ollama?.model}>{status.providers.ollama?.model}</option>
+                    )}
+                    {ollamaModels.map((m) => (
+                      <option key={m.name} value={m.name}>{m.name} ({m.size_gb} GB)</option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="provider-model">{status.providers.ollama?.model || 'llama3.2:latest'}</span>
+                )}
                 {active === 'ollama' ? (
                   <span className="provider-active">in use</span>
                 ) : (
@@ -156,6 +182,13 @@ function ApiKeyModal({ onClose, onChanged }) {
                   </button>
                 )}
               </div>
+            </div>
+          )}
+
+          {status && ollamaModels.length > 1 && (
+            <div className="provider-hint">
+              bigger local models follow instructions and use tools more reliably, but answer more slowly. documents you
+              upload are summarized with the selected model too.
             </div>
           )}
 

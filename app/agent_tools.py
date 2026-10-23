@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from html.parser import HTMLParser
 from typing import Callable, Dict, List, Optional
@@ -144,6 +145,62 @@ def evaluate_expression(expression: str) -> str:
         if value.is_integer() and abs(value) < 1e15:
             value = int(value)
     return str(value)
+
+
+# --- Web search ---
+
+# The engines behind the search library fail independently and at random - one
+# says "No results found" for a query the next answers in a second - so a single
+# attempt isn't a verdict. Try them in turn, "auto" first.
+SEARCH_BACKENDS = ("auto", "duckduckgo", "yahoo", "bing")
+
+
+def search_web(query: str, max_results: int = 5, backends=SEARCH_BACKENDS):
+    """
+    Search the web, falling back across engines until one returns results.
+
+    Returns:
+        (results, last_error) - results is [] only if every engine came up
+        empty or failed
+    """
+    from ddgs import DDGS
+
+    last_error = ""
+    for backend in backends:
+        try:
+            results = DDGS().text(query, max_results=max_results, backend=backend)
+        except Exception as e:
+            last_error = str(e)
+            continue
+        if results:
+            return results, ""
+    return [], last_error
+
+
+# Search snippets are a sentence or two, which is rarely the answer to "who
+# were the top scorers" - that is a table on a page. A small model won't go and
+# open a link by itself, so web_search reads the best pages for it.
+PAGES_TO_READ = 2
+PAGE_CANDIDATES = 3
+PAGE_EXCERPT_CHARS = 2200
+
+
+def read_top_pages(results, count: int = PAGES_TO_READ, candidates: int = PAGE_CANDIDATES):
+    """
+    Fetch the first few results in parallel and keep the first `count` that
+    gave readable text, as [(url, text)]. Pages that fail or are empty are
+    skipped; this never raises.
+    """
+    urls = [r["href"] for r in results[:candidates] if r.get("href")]
+    if not urls:
+        return []
+    try:
+        with ThreadPoolExecutor(max_workers=len(urls)) as pool:
+            texts = list(pool.map(fetch_page, urls))
+    except Exception:
+        return []
+    pages = [(url, text) for url, text in zip(urls, texts) if text and not text.startswith("error:")]
+    return pages[:count]
 
 
 # --- Web fetching ---
@@ -394,15 +451,18 @@ class ToolBox:
     # -- web tools --
 
     def web_search(self, query: str) -> str:
-        """Search the public web. Use only for current events or general facts that the user's documents would not contain, or after searching the documents found nothing. Returns titles, links and snippets."""
-        try:
-            from ddgs import DDGS
-            results = DDGS().text(query, max_results=5)
-        except Exception as e:
-            return f"error: web search failed ({e})"
+        """Search the public web. Use for current events, recent facts, and anything the user's documents would not contain. Returns titles, links and snippets."""
+        results, last_error = search_web(query)
         if not results:
-            return "no results"
-        return "\n\n".join(f"{r.get('title', '')}\n{r.get('href', '')}\n{r.get('body', '')}" for r in results)
+            return ("error: the search engines returned nothing for that query"
+                    + (f" ({last_error})" if last_error else "")
+                    + ". try a shorter or differently worded query before giving up.")
+        snippets = "\n\n".join(f"{r.get('title', '')}\n{r.get('href', '')}\n{r.get('body', '')}" for r in results)
+        pages = read_top_pages(results)
+        if not pages:
+            return snippets
+        excerpts = "\n\n".join(f"[{url}]\n{_clip(text, PAGE_EXCERPT_CHARS)}" for url, text in pages)
+        return f"{snippets}\n\n--- text from the top pages ---\n\n{excerpts}"
 
     def fetch_url(self, url: str) -> str:
         """Read the text of a public web page."""

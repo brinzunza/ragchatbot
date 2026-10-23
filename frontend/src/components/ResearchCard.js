@@ -1,17 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import Markdown from './Markdown';
 import { API_BASE } from '../App';
 
 const POLL_MS = 2000;
-
-// The report marks headings and emphasis with **bold**
-function renderBold(text) {
-  return text.split(/(\*\*[^*]+?\*\*)/g).map((part, i) => (
-    part.startsWith('**') && part.endsWith('**') && part.length > 4
-      ? <strong key={i}>{part.slice(2, -2)}</strong>
-      : part
-  ));
-}
 const PHASE_LABEL = { planning: 'planning', researching: 'researching', writing: 'writing the report' };
 const ENDED_LABEL = {
   done: 'finished',
@@ -19,6 +11,22 @@ const ENDED_LABEL = {
   error: 'failed',
   interrupted: 'interrupted',
 };
+
+// The report as a Markdown file: the report itself, then the notes it was written from
+function reportMarkdown(job) {
+  const notes = job.notes.map((note) => `### ${note.question}\n\n${note.text}`).join('\n\n');
+  return `# ${job.topic}\n\n${job.report}\n\n---\n\n## Research notes\n\n${notes}\n`;
+}
+
+function downloadReport(job) {
+  const slug = job.topic.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50) || 'research';
+  const url = URL.createObjectURL(new Blob([reportMarkdown(job)], { type: 'text/markdown' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `${slug}.md`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
 
 // A background research job: polls its progress, shows the plan and notes
 // as they come in, and the report when it's written. The job lives on the
@@ -93,7 +101,12 @@ function ResearchCard({ chatId, researchId, topic }) {
         <div className="research-current">stopped after {job.notes.length} of {job.plan.length} sub-questions</div>
       )}
 
-      {job && job.report && <div className="research-report">{renderBold(job.report)}</div>}
+      {job && job.report && (
+        <div className="research-report">
+          <Markdown>{job.report}</Markdown>
+          <button type="button" className="message-action" onClick={() => downloadReport(job)}>download .md</button>
+        </div>
+      )}
 
       {job && job.notes.length > 0 && (
         <div className="research-notes">
@@ -103,7 +116,7 @@ function ResearchCard({ chatId, researchId, topic }) {
           {showNotes && job.notes.map((note, i) => (
             <div key={i} className="research-note">
               <div className="research-note-question">{note.question}</div>
-              <div className="research-note-text">{renderBold(note.text)}</div>
+              <div className="research-note-text"><Markdown>{note.text}</Markdown></div>
             </div>
           ))}
         </div>

@@ -25,6 +25,7 @@ from llm_prompts import _chat_llm, agent_system_prompt, agent_tool_hints
 from qa_workflow import get_sources_metadata
 
 RESULT_PREVIEW_CHARS = 700
+DOCUMENT_TOOLS = frozenset({"search_documents", "read_document", "list_documents"})
 MAX_PERMISSION_CODE_CHARS = 6000
 
 
@@ -86,6 +87,46 @@ def stated_facts(history: List[Tuple[str, str]]) -> List[str]:
     """What the user has said about themselves earlier in this conversation, word for word."""
     return [question.strip() for question, _ in history
             if _SELF_STATEMENT.match(question) and "?" not in question]
+
+
+# "summarize this project", "what's the due date for my homework": the user is
+# pointing at the document they uploaded.
+_REFERS_TO_DOCUMENT = re.compile(
+    r"\b(this|my|the|that|attached|uploaded)\s+(project|homework|assignment|document|doc|pdf|paper|file|syllabus|"
+    r"handout|worksheet|lab|problem set|pset|report|readme|notes|contract|resume|cv|lecture|slides)\b",
+    re.IGNORECASE,
+)
+
+
+def refers_to_documents(text: str) -> bool:
+    return bool(_REFERS_TO_DOCUMENT.search(text))
+
+
+# Words that make running code a sensible thing to do. Without one of them
+# run_python isn't offered: a small model treated "show a table" and "summarize
+# this" as programming tasks and tried to print its answer from Python.
+_WANTS_CODE = re.compile(
+    r"\b(python|code|coding|script|program|compute|calculate|calculation|plot|graph|chart|csv|dataset|data|analy[sz]e|"
+    r"analysis|statistic\w*|simulat\w+|run|execute|regex|algorithm|function|dataframe|pandas|numpy|average|mean|"
+    r"median|sum|solve|equation|derivative|integral|probability|matrix|sort|fibonacci|prime|factorial|convert|"
+    r"parse|json|test)\b",
+    re.IGNORECASE,
+)
+
+
+# Wording that asks for the outside world, which a pre-read document can't supply
+_WANTS_WEB = re.compile(
+    r"\b(search|look up|lookup|google|online|internet|web|website|webpage|latest|news|current|today|link|url|source|"
+    r"reference|example|tutorial)\b",
+    re.IGNORECASE,
+)
+
+
+def wants_code(question: str, history: List[Tuple[str, str]]) -> bool:
+    """Whether code execution belongs in this turn: the message asks for it, or the last exchange was about it."""
+    if _WANTS_CODE.search(question):
+        return True
+    return bool(history) and any(_WANTS_CODE.search(text) for text in history[-1])
 
 
 def skips_tools(text: str, has_history: bool = False) -> bool:
@@ -172,14 +213,19 @@ def history_to_messages(history: List[Tuple[str, str]]) -> list:
 
 
 def agent_loop(messages: list, toolbox: ToolBox, max_steps: int, include_context_tools: bool = True,
-               use_tools: bool = True) -> Iterator[dict]:
+               use_tools: bool = True, step_offset: int = 0, docs_read: bool = False,
+               withhold_tools=frozenset()) -> Iterator[dict]:
     """
     Run the model/tool loop over `messages`, yielding events.
+
+    `withhold_tools` names tools to leave out of this run. `step_offset` numbers this loop's steps after any the caller already showed;
+    `docs_read` says the documents were already read, which lifts the
+    documents-before-web rule.
 
     Returns (via StopIteration.value) the final answer text.
     Raises whatever the model call raises; the caller decides what that means.
     """
-    tools = toolbox.tools(include_context_tools)
+    tools = [tool for tool in toolbox.tools(include_context_tools) if tool.name not in withhold_tools]
     tools_by_name = {tool.name: tool for tool in tools}
     llm = _chat_llm()
     llm_with_tools = llm.bind_tools(tools)
@@ -189,7 +235,7 @@ def agent_loop(messages: list, toolbox: ToolBox, max_steps: int, include_context
     # With documents uploaded, the web is only for what they don't cover.
     # Small models reach for the web first anyway, so enforce the order.
     docs_exist = toolbox.has_documents
-    docs_searched = False
+    docs_searched = docs_read
     malformed_retries = 0
 
     while True:
@@ -239,7 +285,7 @@ def agent_loop(messages: list, toolbox: ToolBox, max_steps: int, include_context
 
         for call in tool_calls:
             steps_taken += 1
-            step_id = steps_taken
+            step_id = step_offset + steps_taken
             name, args = call["name"], call.get("args") or {}
             yield {"type": "step", "id": step_id, "tool": name, "args": args, "thought": turn_text.strip()}
             turn_text = ""
@@ -264,7 +310,9 @@ def agent_loop(messages: list, toolbox: ToolBox, max_steps: int, include_context
                     yield {"type": "permission_request", "id": request_id, "step": step_id, "tool": name, "code": code}
                     approved = wait_for_permission(request_id)
                 if not approved:
-                    result, status = "the user did not allow this code to run. do not retry it; continue without it or explain.", "denied"
+                    result, status = ("the user did not allow this code to run. do not retry it and do not guess. carry on with your other tools "
+                                   "(search_documents or read_document for anything about their documents), or say what "
+                                   "you could not do."), "denied"
                 else:
                     try:
                         result = str(tools_by_name[name].invoke(args))
@@ -289,13 +337,38 @@ def run_agent(chat_id: str, question: str, history: List[Tuple[str, str]], confi
     toolbox = ToolBox(chat_id, config)
     toolbox.context_tools_allowed = context_tools_for(question)
     names = toolbox.document_names()
-    knowledge = ("Documents the user has uploaded: " + ", ".join(names) + ". Search them when a question is about "
-                 "what the documents contain (not for things the user said in this conversation), and prefer them "
-                 "to your memory or the web for that."
-                 if names else "The user has not uploaded any documents to this chat.")
-    offered = {tool.name for tool in toolbox.tools()}
+    use_tools = not skips_tools(question, bool(history))
+
+    # When the user points at "this project" and what they uploaded is small, read it
+    # for them before the model's first turn. Left to choose, a small model reached for
+    # run_python to "print a summary" and, once denied, answered from general knowledge.
+    preread = toolbox.small_documents() if use_tools and refers_to_documents(question) else []
+    # Having the whole text, the model has nothing to search for - and offered the
+    # document tools anyway, it called them again, even passing its own instructions
+    # as a document name.
+    withheld = set(DOCUMENT_TOOLS) if preread else set()
+    if not wants_code(question, history):
+        withheld.add("run_python")
+    # With the whole document in hand and nothing asking for code or the web, there is
+    # nothing left for a tool to do - offered one anyway, models searched the web
+    # for an assignment they had just been given.
+    answer_directly = bool(preread) and not wants_code(question, history) and not _WANTS_WEB.search(question)
+    if answer_directly:
+        use_tools = False
+
+    if preread:
+        knowledge = ("The user's uploaded " + ("documents are" if len(preread) > 1 else "document is")
+                     + " included in their message below. Answer from it.")
+    elif names:
+        knowledge = ("Documents the user has uploaded: " + ", ".join(names) + ". Search them when a question is "
+                     "about what the documents contain (not for things the user said in this conversation), and "
+                     "prefer them to your memory or the web for that.")
+    else:
+        knowledge = "The user has not uploaded any documents to this chat."
+    offered = {tool.name for tool in toolbox.tools()} - withheld
     tool_lines = "\n".join(f"- {hint}" for name, hint in agent_tool_hints.items() if name in offered)
-    system_prompt = (agent_system_prompt.replace("{tools}", "Tools:\n" + tool_lines).replace("{today}", today_string())
+    tools_text = "You have no tools for this message; answer directly." if answer_directly else "Tools:\n" + tool_lines
+    system_prompt = (agent_system_prompt.replace("{tools}", tools_text).replace("{today}", today_string())
                      + f"\n\n{knowledge}")
     facts = stated_facts(history)
     if facts:
@@ -306,7 +379,19 @@ def run_agent(chat_id: str, question: str, history: List[Tuple[str, str]], confi
                           "documents or the web:\n" + "\n".join(f"- {fact}" for fact in facts))
     messages = [SystemMessage(content=system_prompt)] + history_to_messages(history) + [HumanMessage(content=question)]
 
-    steps = 0
+    for number, (doc_name, doc_text) in enumerate(preread, 1):
+        yield {"type": "step", "id": number, "tool": "read_document", "args": {"name": doc_name}, "thought": ""}
+        yield {"type": "step_result", "id": number, "status": "ok", "result": doc_text[:RESULT_PREVIEW_CHARS]}
+    if preread:
+        # The text goes in the user's own message, which a small model reads as the
+        # thing to answer from; as a made-up tool exchange the 8B model narrated it
+        # ("I used the read_document tool...") instead of answering.
+        documents = "\n\n".join(f"[{doc_name}]\n{doc_text}" for doc_name, doc_text in preread)
+        messages[-1] = HumanMessage(content=f"{question}\n\n---\nThe user's uploaded "
+                                            f"{'documents' if len(preread) > 1 else 'document'}, already read for you. "
+                                            f"Answer every part of my request from this text:\n\n{documents}")
+
+    steps = len(preread)
     used_web = False
 
     def drive(loop):
@@ -323,8 +408,9 @@ def run_agent(chat_id: str, question: str, history: List[Tuple[str, str]], confi
             yield event
 
     try:
-        answer = yield from drive(agent_loop(messages, toolbox, config["max_agent_steps"],
-                                             use_tools=not skips_tools(question, bool(history))))
+        answer = yield from drive(agent_loop(messages, toolbox, config["max_agent_steps"], use_tools=use_tools,
+                                             step_offset=len(preread), docs_read=bool(preread),
+                                             withhold_tools=withheld))
         if is_empty_answer(answer):
             # A glitch, not a reply. Ask once more for plain sentences, without tools.
             yield {"type": "reset"}

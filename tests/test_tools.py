@@ -380,3 +380,35 @@ def test_reading_pages_never_raises_and_the_snippets_still_come_back(chat_id, mo
     result = box.web_search("q")
     assert "snippet 1" in result and "text from the top pages" not in result
     assert tools.read_top_pages([]) == [] and tools.read_top_pages([{"title": "no link"}]) == []
+
+
+# --- handing documents over whole ---
+
+def write_docs(box, **docs):
+    import os
+    os.makedirs(box.files_path, exist_ok=True)
+    for name, text in docs.items():
+        with open(os.path.join(box.files_path, f"{name}.md"), "w") as f:
+            f.write(text)
+    box.document_names = lambda: list(docs)
+
+
+def test_small_documents_come_back_whole_in_upload_order(chat_id, monkeypatch):
+    box = make_box(chat_id, monkeypatch)
+    write_docs(box, hw="homework text", rubric="rubric text")
+    assert box.small_documents() == [("hw", "homework text"), ("rubric", "rubric text")]
+
+
+def test_documents_that_do_not_fit_together_are_not_handed_over(chat_id, monkeypatch):
+    box = make_box(chat_id, monkeypatch)
+    write_docs(box, a="x" * 60, b="y" * 60)
+    assert box.small_documents(limit=100) == []
+    assert len(box.small_documents(limit=120)) == 2      # exactly at the limit still fits
+
+
+def test_no_documents_or_a_missing_file_means_nothing_to_hand_over(chat_id, monkeypatch):
+    box = make_box(chat_id, monkeypatch)
+    assert box.small_documents() == []
+    write_docs(box, hw="text")
+    box.document_names = lambda: ["hw", "ghost"]          # indexed, but its file is gone
+    assert box.small_documents() == []

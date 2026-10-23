@@ -23,7 +23,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from html.parser import HTMLParser
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -34,6 +34,9 @@ import context_manager
 from document_processor import get_retriever, has_documents, list_documents
 
 MAX_TOOL_OUTPUT_CHARS = 6000
+# Uploaded documents up to this size (all of them together) can be handed to
+# the model whole - about 2,000 tokens, comfortably inside a local model's window.
+MAX_AUTO_READ_CHARS = 9000
 MAX_CHUNK_CHARS = 1500
 MAX_PYTHON_OUTPUT_CHARS = 8000
 PYTHON_TIMEOUT_SECONDS = 30
@@ -440,6 +443,24 @@ class ToolBox:
         if not self.has_documents:
             return []
         return [d["name"] for d in list_documents(self.chroma_db_path, self.files_path)]
+
+    def small_documents(self, limit: int = MAX_AUTO_READ_CHARS) -> List[Tuple[str, str]]:
+        """
+        The full text of every uploaded document as [(name, text)], if they are
+        together small enough to give the model whole - otherwise [].
+        """
+        documents, total = [], 0
+        for name in self.document_names():
+            path = os.path.join(self.files_path, f"{name}.md")
+            if not os.path.exists(path):
+                return []
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+            total += len(text)
+            if total > limit:
+                return []
+            documents.append((name, text))
+        return documents
 
     def list_documents_tool(self) -> str:
         """List the uploaded documents."""

@@ -126,3 +126,30 @@ def test_tool_unsupported_detection(error, unsupported):
 ])
 def test_text_that_starts_as_a_tool_call_is_recognised_even_when_malformed(text, expected):
     assert agent.looks_like_tool_call(text, {"run_python", "calculator"}) is expected
+
+
+@pytest.mark.parametrize("question, expected", [
+    ("summarize this project, show the due date, and show a table of how long each component should take", True),
+    ("what is my homework about", True), ("explain the assignment", True), ("what does the document say about refunds", True),
+    ("tell me about the uploaded pdf", True), ("check my resume", True),
+    ("what is 2+2", False), ("summarize the thesis", False), ("tell me about projects in general", False),
+])
+def test_pointing_at_the_users_documents(question, expected):
+    assert agent.refers_to_documents(question) is expected
+
+
+@pytest.mark.parametrize("question, expected", [
+    ("use python to compute the sum of the squares", True), ("write a function to sort a list", True),
+    ("solve problem 3", True), ("plot the results", True), ("run this", True), ("analyze the csv", True),
+    ("summarize this project, show the due date, and show a table of how long each component should take", False),
+    ("compare heat pumps in a table", False), ("what is the capital of France", False), ("hello", False),
+])
+def test_when_code_is_worth_offering(question, expected):
+    assert agent.wants_code(question, []) is expected
+
+
+def test_a_follow_up_inherits_code_from_the_previous_exchange_only():
+    assert agent.wants_code("yes do it", [("run that script", "ok")]) is True
+    assert agent.wants_code("yes do it", [("tell me a joke", "knock knock")]) is False
+    assert agent.wants_code("yes do it", [("tell me a joke", "knock knock"), ("thanks", "welcome")]) is False   # only the last exchange counts
+    assert agent.wants_code("yes do it", [("run that script", "ok"), ("tell me a joke", "knock knock")]) is False

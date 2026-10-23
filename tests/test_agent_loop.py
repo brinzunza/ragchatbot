@@ -127,13 +127,13 @@ def test_stated_facts_are_pinned_in_the_system_prompt(chat_id, monkeypatch):
 
 def test_only_offered_tools_are_described_to_the_model(chat_id, monkeypatch):
     llm = ScriptedLLM(text("ok"))
-    run(chat_id, monkeypatch, llm, question="explain recursion", permission_mode="safe")
+    run(chat_id, monkeypatch, llm, question="run a quick python check of recursion", permission_mode="safe")
     system = llm.calls[0][0].content
     assert "run_python" not in system and "calculator" in system
     assert "run_python" not in llm.bound_names
 
     llm = ScriptedLLM(text("ok"))
-    run(chat_id, monkeypatch, llm, question="explain recursion", permission_mode="bypass")
+    run(chat_id, monkeypatch, llm, question="run a quick python check of recursion", permission_mode="bypass")
     assert "run_python" in llm.calls[0][0].content and "run_python" in llm.bound_names
 
 
@@ -324,3 +324,131 @@ def test_today_string_reads_naturally():
     import re
     assert re.fullmatch(r"[A-Z][a-z]+day, [A-Z][a-z]+ \d{1,2}, \d{4}", agent.today_string())
     assert " 0" not in agent.today_string()    # 'October 5', not 'October 05'
+
+
+# --- code only when the message is about code ---
+
+def test_run_python_is_not_offered_unless_the_message_is_about_computing_or_code(chat_id, monkeypatch):
+    for question in ("compare heat pumps and gas furnaces in a table", "summarize this and show a table", "what is the capital of France?"):
+        llm = ScriptedLLM(text("ok"))
+        run(chat_id, monkeypatch, llm, question=question, permission_mode="bypass")
+        assert "run_python" not in llm.bound_names and "run_python" not in llm.calls[0][0].content, question
+
+    llm = ScriptedLLM(text("ok"))
+    run(chat_id, monkeypatch, llm, question="use python to sum the numbers 1 to 100", permission_mode="bypass")
+    assert "run_python" in llm.bound_names
+
+
+def test_a_follow_up_to_a_code_exchange_keeps_code_available(chat_id, monkeypatch):
+    llm = ScriptedLLM(text("ok"))
+    run(chat_id, monkeypatch, llm, question="yes, go ahead", permission_mode="bypass",
+        history=[("can you run that script?", "I can, shall I?")])
+    assert "run_python" in llm.bound_names
+
+
+# --- small documents are read up front ---
+
+HOMEWORK = ("# Project 2\n\nDue: Friday, October 30, 2026\n\n1. Parser - 3 hours\n2. Thread pool - 6 hours\n")
+
+
+@pytest.fixture
+def homework(chat_id, monkeypatch):
+    import os
+    monkeypatch.setattr(agent_tools, "has_documents", lambda path: True)
+    monkeypatch.setattr(agent_tools, "list_documents", lambda *a, **k: [{"name": "homework2", "chunk_count": 1}])
+    _, files = chat_manager.get_chat_paths(chat_id)
+    os.makedirs(files, exist_ok=True)
+    with open(os.path.join(files, "homework2.md"), "w") as f:
+        f.write(HOMEWORK)
+    return chat_id
+
+
+SUMMARY_REQUEST = "summarize this project, show the due date, and show a table of how long each component should take"
+
+
+def test_pointing_at_this_project_reads_the_small_document_for_the_model(homework, monkeypatch):
+    llm = ScriptedLLM(text("Summary, due Oct 30, table."))
+    events = run(homework, monkeypatch, llm, question=SUMMARY_REQUEST)
+
+    assert kinds(events) == ["step", "step_result", "chunk", "complete"]
+    step, result = events[0], events[1]
+    assert (step["tool"], step["args"], step["id"]) == ("read_document", {"name": "homework2"}, 1)
+    assert result["status"] == "ok" and "Due: Friday, October 30, 2026" in result["result"]
+    assert events[-1]["steps"] == 1
+
+    user_message = llm.calls[0][-1]
+    assert user_message.content.startswith(SUMMARY_REQUEST) and "Parser - 3 hours" in user_message.content
+    assert "already read for you" in user_message.content
+    system = llm.calls[0][0].content
+    assert "included in their message" in system and "You have no tools" in system and "search_documents" not in system
+
+
+def test_with_the_document_in_hand_and_nothing_asking_for_tools_the_model_answers_directly(homework, monkeypatch):
+    llm = ScriptedLLM(text("answer"))
+    run(homework, monkeypatch, llm, question=SUMMARY_REQUEST, permission_mode="bypass")
+    assert llm.with_tools == [False]
+
+
+def test_the_remembered_question_is_the_users_words_not_the_document_text(homework, monkeypatch):
+    run(homework, monkeypatch, ScriptedLLM(text("answer")), question=SUMMARY_REQUEST)
+    (entry,) = chat_manager.get_context(homework)
+    assert entry["question"] == SUMMARY_REQUEST and "Parser - 3 hours" not in entry["question"]
+
+
+def test_asking_for_the_web_after_a_preread_keeps_tools_but_not_the_document_ones(homework, monkeypatch):
+    llm = ScriptedLLM(call("web_search", {"query": "threads tutorial"}), text("answer"))
+    monkeypatch.setattr(agent_tools, "search_web", lambda query, **kw: ([{"title": "T", "href": "", "body": "b"}], ""))
+    events = run(homework, monkeypatch, llm, question="summarize this project and find an online tutorial for it")
+    assert llm.with_tools[0] is True
+    assert not llm.bound_names & {"search_documents", "read_document", "list_documents", "run_python"}
+    assert "web_search" in llm.bound_names
+    # the pre-read counts as having looked at the documents, so the web isn't redirected
+    assert [e["status"] for e in events if e["type"] == "step_result"] == ["ok", "ok"]
+
+
+def test_asking_for_code_after_a_preread_offers_python(homework, monkeypatch):
+    llm = ScriptedLLM(text("answer"))
+    run(homework, monkeypatch, llm, question="solve the problems in this homework and verify them with python",
+        permission_mode="bypass")
+    assert "run_python" in llm.bound_names and not llm.bound_names & {"search_documents", "read_document"}
+    assert llm.with_tools == [True]
+
+
+def test_step_numbers_continue_after_the_preread(homework, monkeypatch):
+    llm = ScriptedLLM(call("calculator", {"expression": "3+6"}), text("9 hours"))
+    events = run(homework, monkeypatch, llm, question="calculate the total hours for this project")
+    steps = [e for e in events if e["type"] == "step"]
+    assert [(e["id"], e["tool"]) for e in steps] == [(1, "read_document"), (2, "calculator")]
+    assert [e["id"] for e in events if e["type"] == "step_result"] == [1, 2]
+    assert events[-1]["steps"] == 2
+
+
+def test_documents_too_big_to_hand_over_whole_are_searched_instead(homework, monkeypatch):
+    import os
+    _, files = chat_manager.get_chat_paths(homework)
+    with open(os.path.join(files, "homework2.md"), "w") as f:
+        f.write("x" * (agent_tools.MAX_AUTO_READ_CHARS + 1))
+    llm = ScriptedLLM(text("answer"))
+    events = run(homework, monkeypatch, llm, question=SUMMARY_REQUEST)
+    assert "step" not in kinds(events) and "search_documents" in llm.bound_names and llm.with_tools == [True]
+    assert "Search them" in llm.calls[0][0].content
+
+
+def test_a_question_that_does_not_point_at_the_document_does_not_trigger_a_preread(homework, monkeypatch):
+    llm = ScriptedLLM(text("4"))
+    events = run(homework, monkeypatch, llm, question="what is 2+2?")
+    assert "step" not in kinds(events) and "Parser - 3 hours" not in llm.calls[0][-1].content
+
+
+def test_every_uploaded_document_is_read_when_they_fit_together(homework, monkeypatch):
+    import os
+    monkeypatch.setattr(agent_tools, "list_documents", lambda *a, **k: [
+        {"name": "homework2", "chunk_count": 1}, {"name": "rubric", "chunk_count": 1}])
+    _, files = chat_manager.get_chat_paths(homework)
+    with open(os.path.join(files, "rubric.md"), "w") as f:
+        f.write("Rubric: correctness 50%")
+    llm = ScriptedLLM(text("answer"))
+    events = run(homework, monkeypatch, llm, question="summarize my documents and the assignment")
+    assert [e["args"]["name"] for e in events if e["type"] == "step"] == ["homework2", "rubric"]
+    content = llm.calls[0][-1].content
+    assert "[homework2]" in content and "[rubric]" in content and "documents" in content

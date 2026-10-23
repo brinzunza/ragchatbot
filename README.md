@@ -8,9 +8,9 @@ A document-grounded AI agent. Upload PDFs, ask questions about them, and let the
 
 ## Demo
 
-[![Demo: upload a PDF, ask questions about it, and let the agent search the web or write code](docs/demo-poster.jpg)](docs/rag_demo.mp4)
+<video src="https://github.com/user-attachments/assets/b3714e3c-27b7-483c-bcfb-709182ac769b" controls muted width="100%"></video>
 
-A 1½-minute walkthrough: upload a PDF, ask about it, and watch the agent use tools. [Watch the video](docs/rag_demo.mp4).
+A 1½-minute walkthrough: upload a PDF, ask about it, and watch the agent use tools.
 
 ## What it does
 
